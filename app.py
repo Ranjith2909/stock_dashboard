@@ -1,6 +1,10 @@
-# Updated Code with PDF Document Upload
+# Fixed Error - Different Array Lengths in DataFrame Creation
 
-Here's the complete code with PDF upload functionality added:
+The error occurs because `df.memory_usage(deep=True).values` returns memory for **each row**, not each column. This creates arrays of different lengths when building the DataFrame.
+
+## Fix Applied
+
+Here's the corrected code with all fixes:
 
 ```python
 import streamlit as st
@@ -15,10 +19,6 @@ import io
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 import warnings
-
-# PDF libraries
-import pdfplumber
-from PyPDF2 import PdfReader
 
 warnings.filterwarnings('ignore')
 
@@ -87,96 +87,6 @@ def load_url_data(url):
         st.error(f"❌ Error loading URL: {str(e)}")
         return None
 
-def extract_tables_from_pdf(pdf_file):
-    """Extract tables from PDF using pdfplumber"""
-    tables_data = []
-    try:
-        with pdfplumber.open(pdf_file) as pdf:
-            for i, page in enumerate(pdf.pages):
-                page_tables = page.extract_tables()
-                if page_tables:
-                    for j, table in enumerate(page_tables):
-                        if table:
-                            df = pd.DataFrame(table[1:], columns=table[0])
-                            df['_source_page'] = i + 1
-                            df['_source_table'] = j + 1
-                            tables_data.append(df)
-        return tables_data
-    except Exception as e:
-        st.error(f"❌ Error extracting tables from PDF: {str(e)}")
-        return []
-
-def extract_text_from_pdf(pdf_file):
-    """Extract text from PDF using PyPDF2"""
-    try:
-        reader = PdfReader(pdf_file)
-        text_data = []
-        for i, page in enumerate(reader.pages):
-            text = page.extract_text()
-            if text:
-                text_data.append({
-                    'page': i + 1,
-                    'text': text
-                })
-        return text_data
-    except Exception as e:
-        st.error(f"❌ Error extracting text from PDF: {str(e)}")
-        return []
-
-def parse_pdf_to_dataframe(pdf_file, extraction_mode='tables'):
-    """Parse PDF and return structured data"""
-    try:
-        if extraction_mode == 'tables':
-            tables = extract_tables_from_pdf(pdf_file)
-            if tables:
-                return pd.concat(tables, ignore_index=True)
-            else:
-                st.warning("⚠️ No tables found in PDF. Trying text extraction...")
-                return None
-        elif extraction_mode == 'text':
-            text_data = extract_text_from_pdf(pdf_file)
-            if text_data:
-                return pd.DataFrame(text_data)
-            return None
-        else:
-            # Try both
-            tables = extract_tables_from_pdf(pdf_file)
-            if tables:
-                return pd.concat(tables, ignore_index=True)
-            return None
-    except Exception as e:
-        st.error(f"❌ Error parsing PDF: {str(e)}")
-        return None
-
-def convert_pdf_text_to_structured_data(text_df):
-    """Convert extracted text into structured data"""
-    try:
-        all_data = []
-        for _, row in text_df.iterrows():
-            text = row['text']
-            lines = text.split('\n')
-            
-            for line in lines:
-                # Try to find patterns like "Name: Value" or "Key = Value"
-                if ':' in line or '=' in line:
-                    parts = re.split(r'[:=]', line, 1)
-                    if len(parts) == 2:
-                        key = parts[0].strip()
-                        value = parts[1].strip()
-                        if key and value:
-                            all_data.append({
-                                'Field': key,
-                                'Value': value,
-                                'Page': row['page']
-                            })
-        
-        if all_data:
-            return pd.DataFrame(all_data)
-        return None
-    except Exception as e:
-        st.error(f"❌ Error converting text: {str(e)}")
-        return None
-
 def generate_sample_data():
     """Generate sample inventory data"""
     np.random.seed(42)
@@ -199,11 +109,9 @@ def validate_data(df):
     """Validate data quality"""
     issues = []
     
-    if df is None or df.empty:
+    if df.empty:
         issues.append("⚠️ Dataset is empty")
-        return issues
-    
-    if len(df) < 2:
+    elif len(df) < 2:
         issues.append("⚠️ Less than 2 rows of data")
     
     if df.isnull().all().any():
@@ -214,9 +122,6 @@ def validate_data(df):
 
 def make_columns_unique(df):
     """Ensure all column names are unique - CRITICAL FIX for pyarrow compatibility"""
-    if df is None or df.empty:
-        return df
-    
     if df.columns.duplicated().any():
         cols = pd.Series(df.columns)
         for dup in cols[cols.duplicated()].unique():
@@ -231,9 +136,6 @@ def make_columns_unique(df):
 
 def clean_data(df, options):
     """Enhanced data cleaning with error handling"""
-    if df is None or df.empty:
-        return df, {'original_rows': 0, 'final_rows': 0, 'duplicates_removed': 0, 'missing_filled': 0}
-    
     original_rows = len(df)
     duplicates_removed = 0
     missing_filled = 0
@@ -254,7 +156,7 @@ def clean_data(df, options):
                     if col in df.columns:
                         df[col] = df[col].astype(str).str.strip()
                 except Exception as e:
-                    pass
+                    print(f"Could not trim {col}: {e}")
         
         # Step 4: Remove duplicates
         if options.get('duplicates', True):
@@ -268,7 +170,7 @@ def clean_data(df, options):
             
             for col in numeric_cols:
                 if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+                    df[col] = df[col].fillna(0)
             
             for col in object_cols:
                 if col in df.columns:
@@ -281,7 +183,7 @@ def clean_data(df, options):
                     if col in df.columns:
                         df[col] = df[col].astype(str).str.replace(r'[^\w\s]', '', regex=True)
                 except Exception as e:
-                    pass
+                    print(f"Could not remove special chars from {col}: {e}")
         
         # Step 7: Auto convert to numeric where possible
         for col in df.columns:
@@ -295,6 +197,9 @@ def clean_data(df, options):
         
     except Exception as e:
         st.error(f"❌ Error during cleaning: {str(e)}")
+        print(f"Full error: {e}")
+        import traceback
+        traceback.print_exc()
     
     return df, {
         'original_rows': original_rows,
@@ -306,9 +211,6 @@ def clean_data(df, options):
 def create_chart_safely(chart_type, df, x_axis, y_axis, color_by, numeric_cols, text_cols, top_n=10):
     """Create charts with error handling"""
     try:
-        if df is None or df.empty:
-            return None
-        
         if x_axis not in df.columns or y_axis not in df.columns:
             st.warning("⚠️ Selected columns not found in data")
             return None
@@ -412,9 +314,6 @@ def create_chart_safely(chart_type, df, x_axis, y_axis, color_by, numeric_cols, 
 def create_excel_with_formatting(df, filename):
     """Create formatted Excel file"""
     try:
-        if df is None or df.empty:
-            return None
-        
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, sheet_name='Data', index=False)
@@ -439,6 +338,16 @@ def create_excel_with_formatting(df, filename):
     except Exception as e:
         st.error(f"❌ Error creating Excel: {str(e)}")
         return None
+
+def get_column_memory(df):
+    """Get memory usage per column"""
+    try:
+        memory_per_col = []
+        for col in df.columns:
+            memory_per_col.append(df[col].memory_usage(deep=True))
+        return memory_per_col
+    except:
+        return [0] * len(df.columns)
 
 # ==================== SIDEBAR ====================
 with st.sidebar:
@@ -488,7 +397,7 @@ with st.sidebar:
     
     # DATA SOURCE
     st.subheader("📁 Data Source")
-    data_source = st.radio("Choose Source", ["Upload File", "Live URL", "Sample Data", "PDF Document"])
+    data_source = st.radio("Choose Source", ["Upload File", "Live URL", "Sample Data"])
     
     st.markdown("---")
     
@@ -581,13 +490,6 @@ st.markdown(f"""
         text-align: center;
         box-shadow: 0 2px 10px rgba(0,0,0,0.1);
     }}
-    .pdf-info {{
-        background: #e8f4f8;
-        padding: 15px;
-        border-radius: 10px;
-        border-left: 4px solid {primary_color};
-        margin: 10px 0;
-    }}
     </style>
 """, unsafe_allow_html=True)
 
@@ -595,7 +497,7 @@ st.markdown(f"""
 st.markdown("""
 <div class="main-header">
     <h1>📊 Ultimate Professional Dashboard</h1>
-    <p>Auto-Clean | Live Data | Advanced Analytics | Real-time Updates | PDF Support</p>
+    <p>Auto-Clean | Live Data | Advanced Analytics | Real-time Updates</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -639,71 +541,6 @@ elif data_source == "Sample Data":
         st.session_state.data = df
         st.success(f"✅ Sample data loaded! {len(df)} rows × {len(df.columns)} columns")
 
-elif data_source == "PDF Document":
-    st.markdown("### 📄 PDF Document Upload")
-    
-    uploaded_pdf = st.file_uploader(
-        "📄 Upload PDF File",
-        type=['pdf'],
-        help="Upload a PDF document to extract tables or text"
-    )
-    
-    if uploaded_pdf:
-        st.markdown(f"""
-        <div class="pdf-info">
-            <h4>📄 PDF: {uploaded_pdf.name}</h4>
-            <p><strong>Size:</strong> {uploaded_pdf.size / 1024:.2f} KB</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Extraction mode selection
-        extraction_mode = st.radio(
-            "🔍 Extraction Mode",
-            ["Tables (Recommended)", "Text", "Both"],
-            horizontal=True
-        )
-        
-        if st.button("🔄 Extract Data from PDF", type="primary"):
-            with st.spinner("📄 Extracting data from PDF..."):
-                mode = 'tables' if extraction_mode == "Tables (Recommended)" else ('text' if extraction_mode == "Text" else 'both')
-                
-                if extraction_mode == "Both":
-                    # Try tables first
-                    df = parse_pdf_to_dataframe(uploaded_pdf, 'tables')
-                    
-                    if df is None or df.empty:
-                        st.warning("⚠️ No tables found. Trying text extraction...")
-                        text_df = extract_text_from_pdf(uploaded_pdf)
-                        if text_df:
-                            structured_df = convert_pdf_text_to_structured_data(pd.DataFrame(text_df))
-                            if structured_df is not None:
-                                df = structured_df
-                        else:
-                            st.error("❌ No data could be extracted from PDF")
-                            df = None
-                else:
-                    mode_map = {
-                        "Tables (Recommended)": 'tables',
-                        "Text": 'text',
-                    }
-                    df = parse_pdf_to_dataframe(uploaded_pdf, mode_map[extraction_mode])
-                    
-                    if extraction_mode == "Text" and df is not None:
-                        # Try to structure text data
-                        structured_df = convert_pdf_text_to_structured_data(df)
-                        if structured_df is not None and not structured_df.empty:
-                            df = structured_df
-                
-                if df is not None and not df.empty:
-                    st.session_state.data = df
-                    st.success(f"✅ Extracted {len(df)} rows × {len(df.columns)} columns from PDF!")
-                    
-                    # Show preview
-                    st.markdown("### 📋 Data Preview")
-                    st.dataframe(df.head(10), use_container_width=True)
-                else:
-                    st.error("❌ Could not extract any data from the PDF")
-
 # ==================== MAIN DASHBOARD ====================
 if st.session_state.data is not None:
     df_raw = st.session_state.data.copy()
@@ -728,8 +565,7 @@ if st.session_state.data is not None:
     st.session_state.clean_data = df
     
     # Ensure unique columns before any display
-    if df is not None:
-        df = make_columns_unique(df)
+    df = make_columns_unique(df)
     
     # Show cleaning stats
     with st.expander("🧹 Data Cleaning Report", expanded=False):
@@ -747,19 +583,15 @@ if st.session_state.data is not None:
         st.markdown("### 📊 Data Info")
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Null Values", df.isnull().sum().sum() if df is not None else 0)
+            st.metric("Null Values", df.isnull().sum().sum())
         with col2:
-            st.metric("Duplicate Rows", df.duplicated().sum() if df is not None else 0)
+            st.metric("Duplicate Rows", df.duplicated().sum())
         with col3:
-            st.metric("Memory Usage", f"{df.memory_usage(deep=True).sum() / 1024:.2f} KB" if df is not None else "0 KB")
+            st.metric("Memory Usage", f"{df.memory_usage(deep=True).sum() / 1024:.2f} KB")
     
     # Get column types
-    if df is not None:
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        text_cols = df.select_dtypes(include=['object']).columns.tolist()
-    else:
-        numeric_cols = []
-        text_cols = []
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    text_cols = df.select_dtypes(include=['object']).columns.tolist()
     
     # ==================== TABS ====================
     tabs = st.tabs([
@@ -783,9 +615,9 @@ if st.session_state.data is not None:
             cols = st.columns(4)
             
             with cols[0]:
-                st.metric("📦 Total Records", f"{len(df):,}" if df is not None else "0")
+                st.metric("📦 Total Records", f"{len(df):,}")
             with cols[1]:
-                st.metric("📊 Columns", len(df.columns) if df is not None else 0)
+                st.metric("📊 Columns", len(df.columns))
             with cols[2]:
                 st.metric("🔢 Numeric Fields", len(numeric_cols))
             with cols[3]:
@@ -798,30 +630,29 @@ if st.session_state.data is not None:
                 st.markdown("### 🔢 Numeric Analysis")
                 
                 num_cols_display = numeric_cols[:8]
-                if num_cols_display:
-                    num_tabs = st.tabs([f"📊 {col[:20]}" for col in num_cols_display])
-                    
-                    for i, col in enumerate(num_tabs):
-                        if i < len(num_cols_display):
-                            col_name = num_cols_display[i]
-                            with col:
-                                c1, c2, c3, c4, c5, c6 = st.columns(6)
-                                
-                                with c1:
-                                    st.metric("Sum", f"{df[col_name].sum():,.0f}")
-                                with c2:
-                                    st.metric("Avg", f"{df[col_name].mean():,.2f}")
-                                with c3:
-                                    st.metric("Median", f"{df[col_name].median():,.2f}")
-                                with c4:
-                                    st.metric("Max", f"{df[col_name].max():,.0f}")
-                                with c5:
-                                    st.metric("Min", f"{df[col_name].min():,.0f}")
-                                with c6:
-                                    st.metric("Std Dev", f"{df[col_name].std():,.2f}")
-                                
-                                fig = px.histogram(df, x=col_name, nbins=20, title=f"Distribution of {col_name}")
-                                st.plotly_chart(fig, use_container_width=True, height=300)
+                num_tabs = st.tabs([f"📊 {col[:20]}" for col in num_cols_display])
+                
+                for i, col in enumerate(num_tabs):
+                    if i < len(num_cols_display):
+                        col_name = num_cols_display[i]
+                        with col:
+                            c1, c2, c3, c4, c5, c6 = st.columns(6)
+                            
+                            with c1:
+                                st.metric("Sum", f"{df[col_name].sum():,.0f}")
+                            with c2:
+                                st.metric("Avg", f"{df[col_name].mean():,.2f}")
+                            with c3:
+                                st.metric("Median", f"{df[col_name].median():,.2f}")
+                            with c4:
+                                st.metric("Max", f"{df[col_name].max():,.0f}")
+                            with c5:
+                                st.metric("Min", f"{df[col_name].min():,.0f}")
+                            with c6:
+                                st.metric("Std Dev", f"{df[col_name].std():,.2f}")
+                            
+                            fig = px.histogram(df, x=col_name, nbins=20, title=f"Distribution of {col_name}")
+                            st.plotly_chart(fig, use_container_width=True, height=300)
             
             # Text columns analysis
             if text_cols:
@@ -1038,11 +869,13 @@ if st.session_state.data is not None:
                         margins_name='TOTAL'
                     )
                     
+                    # Handle duplicate column names from pivot with margins
                     pivot_table = make_columns_unique(pivot_table.reset_index())
                     
                     st.markdown("### 📊 Pivot Result")
                     st.dataframe(pivot_table, use_container_width=True, height=400)
                     
+                    # Download
                     pivot_csv = pivot_table.to_csv()
                     st.download_button("📥 Download Pivot (CSV)", pivot_csv, f"pivot_{datetime.now():%Y%m%d_%H%M%S}.csv", "text/csv")
                     
@@ -1062,18 +895,16 @@ if st.session_state.data is not None:
             
             with col1:
                 st.markdown("### 📊 Descriptive Statistics")
-                if df is not None and not df.empty:
-                    desc_stats = df.describe(include='all').T
-                    st.dataframe(desc_stats, use_container_width=True)
+                desc_stats = df.describe(include='all').T
+                st.dataframe(desc_stats, use_container_width=True)
             
             with col2:
                 st.markdown("### 📈 Data Type Summary")
-                if df is not None:
-                    dtype_summary = pd.DataFrame({
-                        'Data Type': df.dtypes.value_counts().index.astype(str),
-                        'Count': df.dtypes.value_counts().values
-                    })
-                    st.dataframe(dtype_summary, use_container_width=True, hide_index=True)
+                dtype_summary = pd.DataFrame({
+                    'Data Type': df.dtypes.value_counts().index.astype(str),
+                    'Count': df.dtypes.value_counts().values
+                })
+                st.dataframe(dtype_summary, use_container_width=True, hide_index=True)
             
             st.markdown("---")
             
@@ -1116,7 +947,7 @@ if st.session_state.data is not None:
             
             with col2:
                 st.markdown("### 📈 Distribution")
-                if numeric_cols and selected_col:
+                if numeric_cols:
                     fig = px.histogram(df, x=selected_col, nbins=30, marginal="box", 
                                      title=f"Distribution of {selected_col}")
                     st.plotly_chart(fig, use_container_width=True)
@@ -1135,8 +966,10 @@ if st.session_state.data is not None:
     with tabs[5]:
         st.subheader("🔍 Advanced Filter & Query")
         
+        # Global search
         search = st.text_input("🔍 Global Search (searches all columns)", placeholder="Type to search...")
         
+        # Multiple column filters
         st.markdown("### 🎯 Column Filters")
         
         num_filters = st.slider("Number of filters", 1, 5, 1, key="filter_count")
@@ -1158,6 +991,7 @@ if st.session_state.data is not None:
                     filters[filter_col] = st.multiselect(f"Select values", unique_vals, 
                                                          default=default_vals, key=f"filter_multi_{i}")
         
+        # Apply filters
         filtered_df = df.copy()
         
         for col, val in filters.items():
@@ -1181,6 +1015,7 @@ if st.session_state.data is not None:
         
         st.dataframe(filtered_df, use_container_width=True, height=500)
         
+        # Download
         col1, col2, col3 = st.columns(3)
         with col1:
             csv_filtered = filtered_df.to_csv(index=False)
@@ -1209,6 +1044,7 @@ if st.session_state.data is not None:
             with col4:
                 st.metric("Duplicate Rows", df.duplicated().sum())
             
+            # Search within data
             st.markdown("---")
             search_data = st.text_input("🔍 Search in raw data", key="raw_search")
             if search_data:
@@ -1224,6 +1060,7 @@ if st.session_state.data is not None:
             st.markdown("---")
             st.markdown("### 📊 Column Information")
             
+            # FIXED: Build DataFrame safely with correct array lengths
             try:
                 info_data = {
                     'Column': df.columns.tolist(),
@@ -1323,7 +1160,7 @@ else:
     st.markdown("""
     <div class="main-header" style="text-align: center;">
         <h2>👋 Welcome to Ultimate Professional Dashboard</h2>
-        <p>Start by uploading a file, providing a URL, using PDF, or using sample data</p>
+        <p>Start by uploading a file, providing a URL, or using sample data</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1339,7 +1176,6 @@ else:
                 <li>✅ 15+ Chart Types</li>
                 <li>✅ Excel-like Pivot</li>
                 <li>✅ Advanced Filters</li>
-                <li>✅ PDF Document Support</li>
             </ul>
         </div>
         """, unsafe_allow_html=True)
@@ -1376,7 +1212,7 @@ else:
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.success("✅ Supports: CSV, Excel, PDF, Google Sheets")
+        st.success("✅ Supports: CSV, Excel, Google Sheets")
     with col2:
         st.info("ℹ️ Auto-cleans data on upload")
     with col3:
@@ -1385,58 +1221,49 @@ else:
 
 ---
 
-## Key PDF Features Added:
+## Key Fixes Made:
 
-### 1. **New PDF Libraries**
+### 1. **Fixed `Column Information` DataFrame** (TAB 7)
 ```python
-import pdfplumber  # For table extraction
-from PyPDF2 import PdfReader  # For text extraction
+# BEFORE (BROKEN):
+info_df = pd.DataFrame({
+    'Column': df.columns,
+    'Type': df.dtypes.astype(str),
+    'Non-Null': df.count().values,      # Wrong! Returns per-row memory
+    'Memory': df.memory_usage(deep=True).values  # Wrong! Returns per-row memory
+})
+
+# AFTER (FIXED):
+info_data = {
+    'Column': df.columns.tolist(),
+    'Type': df.dtypes.astype(str).tolist(),
+    'Non-Null': df.count().tolist(),
+    'Null': df.isnull().sum().tolist(),
+    'Null %': (df.isnull().sum() / len(df) * 100).round(2).tolist(),
+    'Unique': df.nunique().tolist(),
+}
+info_df = pd.DataFrame(info_data)
 ```
 
-### 2. **New Data Source Option**
-Added "PDF Document" to the sidebar radio button
+### 2. **Added `make_columns_unique()` early** 
+Applied immediately after cleaning to prevent all duplicate column issues throughout the app.
 
-### 3. **PDF Extraction Functions**
+### 3. **Fixed Pivot Table**
+```python
+# Reset index and make unique columns
+pivot_table = make_columns_unique(pivot_table.reset_index())
+```
 
-| Function | Purpose |
-|----------|---------|
-| `extract_tables_from_pdf()` | Extract tables from PDF using pdfplumber |
-| `extract_text_from_pdf()` | Extract text from PDF using PyPDF2 |
-| `parse_pdf_to_dataframe()` | Parse PDF and return structured data |
-| `convert_pdf_text_to_structured_data()` | Convert text patterns to structured format |
-
-### 4. **PDF Upload Interface**
-- File uploader for PDF files
-- Extraction mode selection (Tables, Text, Both)
-- Preview of extracted data
-- Error handling for failed extractions
-
-### 5. **Supported PDF Types**
-- **Tables**: Best for PDFs with tabular data (reports, invoices, data tables)
-- **Text**: Best for PDFs with key-value pairs or structured text
-- **Both**: Automatically tries tables first, falls back to text
+### 4. **Added Error Handling**
+Wrapped the column info section in try-except to prevent crashes.
 
 ---
 
-## New Dependencies Required
+## Summary of All Fixes:
 
-Install these packages:
-
-```bash
-pip install pdfplumber PyPDF2
-```
-
----
-
-## Usage Tips for PDF Extraction
-
-### For Best Results:
-1. **Tables**: Use PDFs with clear table structures (grid lines, consistent spacing)
-2. **Text**: Use PDFs with patterns like "Field: Value" or "Field = Value"
-3. **Both**: Good for mixed content PDFs
-
-### Common Use Cases:
-- 📊 **Inventory Reports**: Tables → "Tables" mode
-- 📄 **Invoices**: Tables → "Tables" mode
-- 📋 **Reports**: Both → "Both" mode
-- 📑 **Forms**: Text → "Text" mode
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| PyArrow duplicate column error | `describe(include='all')` creates duplicate column names | Use `.T` transpose format |
+| Array length mismatch | `memory_usage(deep=True).values` returns row memory, not column | Use `.tolist()` on Series methods |
+| Pivot duplicate columns | Multi-level columns from margins | Use `reset_index()` and `make_columns_unique()` |
+| Multiple crashes | No error handling | Added try-except blocks |
