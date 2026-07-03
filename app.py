@@ -114,7 +114,6 @@ def validate_data(df):
 def make_columns_unique(df):
     """Ensure all column names are unique - CRITICAL FIX for pyarrow compatibility"""
     if df.columns.duplicated().any():
-        # Add suffix to duplicate columns
         cols = pd.Series(df.columns)
         for dup in cols[cols.duplicated()].unique():
             count = 0
@@ -141,7 +140,7 @@ def clean_data(df, options):
         object_cols = df.select_dtypes(include=['object']).columns.tolist()
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         
-        # Step 3: Trim spaces safely - ONLY if column exists
+        # Step 3: Trim spaces safely
         if options.get('trim', True) and len(object_cols) > 0:
             for col in object_cols:
                 try:
@@ -160,12 +159,10 @@ def clean_data(df, options):
         if options.get('missing', True):
             missing_filled = df.isnull().sum().sum()
             
-            # Fill numeric columns with 0
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = df[col].fillna(0)
             
-            # Fill text columns with N/A
             for col in object_cols:
                 if col in df.columns:
                     df[col] = df[col].fillna('N/A')
@@ -332,6 +329,16 @@ def create_excel_with_formatting(df, filename):
     except Exception as e:
         st.error(f"❌ Error creating Excel: {str(e)}")
         return None
+
+def get_column_memory(df):
+    """Get memory usage per column"""
+    try:
+        memory_per_col = []
+        for col in df.columns:
+            memory_per_col.append(df[col].memory_usage(deep=True))
+        return memory_per_col
+    except:
+        return [0] * len(df.columns)
 
 # ==================== SIDEBAR ====================
 with st.sidebar:
@@ -548,6 +555,9 @@ if st.session_state.data is not None:
     df, clean_stats = clean_data(df_raw.copy(), clean_options)
     st.session_state.clean_data = df
     
+    # Ensure unique columns before any display
+    df = make_columns_unique(df)
+    
     # Show cleaning stats
     with st.expander("🧹 Data Cleaning Report", expanded=False):
         col1, col2, col3, col4 = st.columns(4)
@@ -611,7 +621,7 @@ if st.session_state.data is not None:
                 st.markdown("### 🔢 Numeric Analysis")
                 
                 num_cols_display = numeric_cols[:8]
-                num_tabs = st.tabs([f"📊 {col}" for col in num_cols_display])
+                num_tabs = st.tabs([f"📊 {col[:20]}" for col in num_cols_display])
                 
                 for i, col in enumerate(num_tabs):
                     if i < len(num_cols_display):
@@ -850,8 +860,8 @@ if st.session_state.data is not None:
                         margins_name='TOTAL'
                     )
                     
-                    # FIX: Handle duplicate column names from pivot with margins
-                    pivot_table = make_columns_unique(pivot_table)
+                    # Handle duplicate column names from pivot with margins
+                    pivot_table = make_columns_unique(pivot_table.reset_index())
                     
                     st.markdown("### 📊 Pivot Result")
                     st.dataframe(pivot_table, use_container_width=True, height=400)
@@ -876,10 +886,7 @@ if st.session_state.data is not None:
             
             with col1:
                 st.markdown("### 📊 Descriptive Statistics")
-                
-                # FIX: Handle duplicate column names from describe(include='all')
                 desc_stats = df.describe(include='all').T
-                desc_stats = make_columns_unique(desc_stats)
                 st.dataframe(desc_stats, use_container_width=True)
             
             with col2:
@@ -997,8 +1004,6 @@ if st.session_state.data is not None:
         with col2:
             st.info(f"Original: {len(df):,} rows")
         
-        # FIX: Ensure unique columns before displaying
-        filtered_df = make_columns_unique(filtered_df)
         st.dataframe(filtered_df, use_container_width=True, height=500)
         
         # Download
@@ -1041,22 +1046,25 @@ if st.session_state.data is not None:
             else:
                 display_df = df
             
-            # FIX: Ensure unique columns before displaying
-            display_df = make_columns_unique(display_df)
             st.dataframe(display_df, use_container_width=True, height=600)
             
             st.markdown("---")
             st.markdown("### 📊 Column Information")
-            info_df = pd.DataFrame({
-                'Column': df.columns,
-                'Type': df.dtypes.astype(str),
-                'Non-Null': df.count().values,
-                'Null': df.isnull().sum().values,
-                'Null %': (df.isnull().sum().values / len(df) * 100).round(2),
-                'Unique': [df[col].nunique() for col in df.columns],
-                'Memory': df.memory_usage(deep=True).values
-            })
-            st.dataframe(info_df, use_container_width=True, hide_index=True)
+            
+            # FIXED: Build DataFrame safely with correct array lengths
+            try:
+                info_data = {
+                    'Column': df.columns.tolist(),
+                    'Type': df.dtypes.astype(str).tolist(),
+                    'Non-Null': df.count().tolist(),
+                    'Null': df.isnull().sum().tolist(),
+                    'Null %': (df.isnull().sum() / len(df) * 100).round(2).tolist(),
+                    'Unique': df.nunique().tolist(),
+                }
+                info_df = pd.DataFrame(info_data)
+                st.dataframe(info_df, use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.warning(f"⚠️ Could not generate column info: {str(e)}")
         else:
             st.info("Raw data display is disabled. Enable in sidebar settings.")
     
