@@ -502,189 +502,30 @@ if data_source == "Upload File":
         help="Supports Excel and CSV formats"
     )
     
-   Sure—your current uploader only allows `csv/xlsx/xlsm/xls`. To add **PDF upload**, you need 3 changes:
+    if uploaded_file:
+        if uploaded_file.name.endswith('.csv'):
+            df = load_csv(uploaded_file)
+        else:
+            df = load_excel(uploaded_file)
+        
+        if df is not None:
+            st.session_state.data = df
+            st.success(f"✅ Loaded {len(df)} rows × {len(df.columns)} columns")
 
----
+elif data_source == "Live URL":
+    url = st.text_input(
+        "📎 Paste Google Sheets or CSV URL",
+        help="Make sheet public: File → Share → Anyone with link → Viewer"
+    )
+    st.info("💡 For Google Sheets: Replace '/edit' with '/export?format=csv'")
+    
+    if url and st.button("🔄 Load URL Data"):
+        with st.spinner("Loading data..."):
+            df = load_url_data(url)
+            if df is not None:
+                st.session_state.data = df
+                st.success(f"✅ Loaded {len(df)} rows × {len(df.columns)} columns")
 
-## 1) Install dependency (Streamlit requirements)
-Add this to your `requirements.txt`:
-
-```txt
-pdfplumber
-```
-
----
-
-## 2) Add import near the top of `app.py`
-Right after your imports (near the top):
-
-```python
-try:
-    import pdfplumber
-except ImportError:
-    pdfplumber = None
-```
-
----
-
-## 3) Add this PDF loader function (anywhere in “HELPER FUNCTIONS” area)
-```python
-@st.cache_data
-def load_pdf_from_bytes(file_bytes):
-    """Extract tables from PDF; if no tables, extract text lines into a DataFrame."""
-    if pdfplumber is None:
-        st.error("❌ pdfplumber is not installed. Add it to requirements.txt and redeploy.")
-        return None
-
-    try:
-        all_tables = []
-        text_rows = []
-
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            for page_num, page in enumerate(pdf.pages, start=1):
-                # Try tables first
-                tables = page.extract_tables()
-
-                if tables:
-                    for table_index, table in enumerate(tables, start=1):
-                        if not table:
-                            continue
-
-                        # Clean rows
-                        cleaned = []
-                        for row in table:
-                            if row is None:
-                                continue
-                            cleaned_row = [
-                                ("" if cell is None else str(cell)).strip()
-                                for cell in row
-                            ]
-                            if any(cell != "" for cell in cleaned_row):
-                                cleaned.append(cleaned_row)
-
-                        if len(cleaned) < 2:
-                            continue
-
-                        max_cols = max(len(r) for r in cleaned)
-                        cleaned = [r + [""] * (max_cols - len(r)) for r in cleaned]
-
-                        header = cleaned[0]
-                        data = cleaned[1:]
-
-                        if not any(str(h).strip() for h in header):
-                            header = [f"COLUMN_{i+1}" for i in range(max_cols)]
-
-                        temp_df = pd.DataFrame(data, columns=header)
-                        temp_df.insert(0, "PDF_PAGE", page_num)
-                        temp_df.insert(1, "PDF_TABLE", table_index)
-
-                        temp_df = make_columns_unique(temp_df)
-                        all_tables.append(temp_df)
-
-                # If no tables, fall back to text
-                text = page.extract_text()
-                if text:
-                    for line_no, line in enumerate(text.splitlines(), start=1):
-                        line = line.strip()
-                        if line:
-                            text_rows.append({
-                                "PDF_PAGE": page_num,
-                                "LINE_NO": line_no,
-                                "TEXT": line
-                            })
-
-        if all_tables:
-            df = pd.concat(all_tables, ignore_index=True, sort=False)
-            return make_columns_unique(df)
-
-        if text_rows:
-            df = pd.DataFrame(text_rows)
-            return make_columns_unique(df)
-
-        st.error("❌ No tables/text could be extracted from the PDF.")
-        return None
-
-    except Exception as e:
-        st.error(f"❌ Error reading PDF: {str(e)}")
-        return None
-```
-
----
-
-## 4) Modify your file uploader UI + loading logic
-
-### A) Replace your uploader block
-Find this:
-
-```python
-uploaded_file = st.file_uploader(
-    "📁 Upload Excel/CSV File",
-    type=['csv', 'xlsx', 'xlsm', 'xls'],
-    help="Supports Excel and CSV formats"
-)
-```
-
-Replace with:
-
-```python
-uploaded_file = st.file_uploader(
-    "📁 Upload Excel/CSV/PDF File",
-    type=['csv', 'xlsx', 'xlsm', 'xls', 'pdf'],
-    help="Supports CSV, Excel, and PDF formats"
-)
-```
-
-### B) Replace your `if uploaded_file:` loading block
-Find this:
-
-```python
-if uploaded_file:
-    if uploaded_file.name.endswith('.csv'):
-        df = load_csv(uploaded_file)
-    else:
-        df = load_excel(uploaded_file)
-```
-
-Replace with:
-
-```python
-if uploaded_file:
-    file_name = uploaded_file.name.lower()
-
-    if file_name.endswith('.csv'):
-        df = load_csv(uploaded_file)
-
-    elif file_name.endswith(('.xlsx', '.xlsm', '.xls')):
-        df = load_excel(uploaded_file)
-
-    elif file_name.endswith('.pdf'):
-        pdf_bytes = uploaded_file.getvalue()
-        df = load_pdf_from_bytes(pdf_bytes)
-
-    else:
-        df = None
-        st.error("❌ Unsupported file format")
-
-    if df is not None:
-        st.session_state.data = df
-        st.success(f"✅ Loaded {len(df)} rows × {len(df.columns)} columns")
-```
-
----
-
-## Optional: update landing text
-At the bottom you have:
-```python
-st.success("✅ Supports: CSV, Excel, Google Sheets")
-```
-Change to:
-```python
-st.success("✅ Supports: CSV, Excel, PDF, Google Sheets")
-```
-
----
-
-If you want, tell me what kind of PDFs you’ll upload (digital with tables vs scanned images). If they’re scanned, we’ll need OCR (different setup).
 elif data_source == "Sample Data":
     if st.button("📊 Generate Sample Data"):
         df = generate_sample_data()
