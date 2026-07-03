@@ -111,8 +111,23 @@ def validate_data(df):
     
     return issues
 
+def make_columns_unique(df):
+    """Ensure all column names are unique - CRITICAL FIX for pyarrow compatibility"""
+    if df.columns.duplicated().any():
+        # Add suffix to duplicate columns
+        cols = pd.Series(df.columns)
+        for dup in cols[cols.duplicated()].unique():
+            count = 0
+            for i, col in enumerate(cols):
+                if col == dup:
+                    if count > 0:
+                        cols.iloc[i] = f"{col}_{count}"
+                    count += 1
+        df.columns = cols
+    return df
+
 def clean_data(df, options):
-    """Enhanced data cleaning with error handling - FIXED VERSION"""
+    """Enhanced data cleaning with error handling"""
     original_rows = len(df)
     duplicates_removed = 0
     missing_filled = 0
@@ -130,7 +145,7 @@ def clean_data(df, options):
         if options.get('trim', True) and len(object_cols) > 0:
             for col in object_cols:
                 try:
-                    if col in df.columns:  # CHECK IF COLUMN EXISTS
+                    if col in df.columns:
                         df[col] = df[col].astype(str).str.strip()
                 except Exception as e:
                     print(f"Could not trim {col}: {e}")
@@ -159,7 +174,7 @@ def clean_data(df, options):
         if options.get('special', False):
             for col in object_cols:
                 try:
-                    if col in df.columns:  # CHECK IF COLUMN EXISTS
+                    if col in df.columns:
                         df[col] = df[col].astype(str).str.replace(r'[^\w\s]', '', regex=True)
                 except Exception as e:
                     print(f"Could not remove special chars from {col}: {e}")
@@ -167,10 +182,8 @@ def clean_data(df, options):
         # Step 7: Auto convert to numeric where possible
         for col in df.columns:
             try:
-                # Only try conversion if not already numeric
                 if df[col].dtype == 'object':
                     converted = pd.to_numeric(df[col], errors='coerce')
-                    # Only convert if most values are numeric
                     if converted.notna().sum() / len(df) > 0.8:
                         df[col] = converted
             except Exception as e:
@@ -192,7 +205,6 @@ def clean_data(df, options):
 def create_chart_safely(chart_type, df, x_axis, y_axis, color_by, numeric_cols, text_cols, top_n=10):
     """Create charts with error handling"""
     try:
-        # Validate inputs
         if x_axis not in df.columns or y_axis not in df.columns:
             st.warning("⚠️ Selected columns not found in data")
             return None
@@ -280,7 +292,6 @@ def create_chart_safely(chart_type, df, x_axis, y_axis, color_by, numeric_cols, 
             st.warning(f"Chart type '{chart_type}' not implemented")
             return None
         
-        # Apply theme
         fig.update_layout(
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
@@ -301,11 +312,9 @@ def create_excel_with_formatting(df, filename):
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, sheet_name='Data', index=False)
             
-            # Get workbook and worksheet
             workbook = writer.book
             worksheet = writer.sheets['Data']
             
-            # Auto-adjust column widths
             for column in worksheet.columns:
                 max_length = 0
                 column_letter = column[0].column_letter
@@ -536,7 +545,6 @@ if st.session_state.data is not None:
         'special': remove_special
     }
     
-    # FIXED: Pass clean_options correctly
     df, clean_stats = clean_data(df_raw.copy(), clean_options)
     st.session_state.clean_data = df
     
@@ -602,8 +610,7 @@ if st.session_state.data is not None:
             if numeric_cols:
                 st.markdown("### 🔢 Numeric Analysis")
                 
-                # Create tabs for each numeric column
-                num_cols_display = numeric_cols[:8]  # Show first 8
+                num_cols_display = numeric_cols[:8]
                 num_tabs = st.tabs([f"📊 {col}" for col in num_cols_display])
                 
                 for i, col in enumerate(num_tabs):
@@ -625,7 +632,6 @@ if st.session_state.data is not None:
                             with c6:
                                 st.metric("Std Dev", f"{df[col_name].std():,.2f}")
                             
-                            # Mini visualization
                             fig = px.histogram(df, x=col_name, nbins=20, title=f"Distribution of {col_name}")
                             st.plotly_chart(fig, use_container_width=True, height=300)
             
@@ -634,7 +640,7 @@ if st.session_state.data is not None:
                 st.markdown("---")
                 st.markdown("### 📝 Text Analysis")
                 
-                for col in text_cols[:3]:  # Show first 3
+                for col in text_cols[:3]:
                     with st.expander(f"📊 {col} - Value Counts"):
                         value_counts = df[col].value_counts()
                         col1, col2 = st.columns([1, 2])
@@ -658,12 +664,11 @@ if st.session_state.data is not None:
             
             alerts_found = False
             
-            # Check for all numeric columns with potential issues
             for col in numeric_cols:
                 zero_count = (df[col] == 0).sum()
                 if zero_count > 0:
                     alerts_found = True
-                    if zero_count > len(df) * 0.3:  # More than 30% zeros
+                    if zero_count > len(df) * 0.3:
                         st.markdown(f"""
                         <div class="alert-warning">
                             <h3>⚠️ WARNING: {zero_count} ({zero_count/len(df)*100:.1f}%) values are ZERO in {col}</h3>
@@ -729,7 +734,6 @@ if st.session_state.data is not None:
         if show_charts:
             st.subheader("📊 Advanced Visualizations")
             
-            # Chart selection
             col1, col2 = st.columns([1, 3])
             
             with col1:
@@ -846,6 +850,9 @@ if st.session_state.data is not None:
                         margins_name='TOTAL'
                     )
                     
+                    # FIX: Handle duplicate column names from pivot with margins
+                    pivot_table = make_columns_unique(pivot_table)
+                    
                     st.markdown("### 📊 Pivot Result")
                     st.dataframe(pivot_table, use_container_width=True, height=400)
                     
@@ -869,12 +876,16 @@ if st.session_state.data is not None:
             
             with col1:
                 st.markdown("### 📊 Descriptive Statistics")
-                st.dataframe(df.describe(include='all'), use_container_width=True)
+                
+                # FIX: Handle duplicate column names from describe(include='all')
+                desc_stats = df.describe(include='all').T
+                desc_stats = make_columns_unique(desc_stats)
+                st.dataframe(desc_stats, use_container_width=True)
             
             with col2:
                 st.markdown("### 📈 Data Type Summary")
                 dtype_summary = pd.DataFrame({
-                    'Data Type': df.dtypes.value_counts().index,
+                    'Data Type': df.dtypes.value_counts().index.astype(str),
                     'Count': df.dtypes.value_counts().values
                 })
                 st.dataframe(dtype_summary, use_container_width=True, hide_index=True)
@@ -888,6 +899,9 @@ if st.session_state.data is not None:
                 if numeric_cols:
                     selected_col = st.selectbox("Select Column", numeric_cols, key="stats_col")
                     
+                    mode_val = df[selected_col].mode()
+                    mode_display = f"{mode_val.iloc[0]:,.2f}" if not mode_val.empty else "N/A"
+                    
                     stats_data = {
                         'Metric': [
                             'Count', 'Sum', 'Mean', 'Median', 'Mode', 
@@ -899,7 +913,7 @@ if st.session_state.data is not None:
                             f"{df[selected_col].sum():,.2f}",
                             f"{df[selected_col].mean():,.2f}",
                             f"{df[selected_col].median():,.2f}",
-                            f"{df[selected_col].mode()[0] if not df[selected_col].mode().empty else 0:,.2f}",
+                            mode_display,
                             f"{df[selected_col].std():,.2f}",
                             f"{df[selected_col].var():,.2f}",
                             f"{df[selected_col].min():,.2f}",
@@ -983,6 +997,8 @@ if st.session_state.data is not None:
         with col2:
             st.info(f"Original: {len(df):,} rows")
         
+        # FIX: Ensure unique columns before displaying
+        filtered_df = make_columns_unique(filtered_df)
         st.dataframe(filtered_df, use_container_width=True, height=500)
         
         # Download
@@ -1025,6 +1041,8 @@ if st.session_state.data is not None:
             else:
                 display_df = df
             
+            # FIX: Ensure unique columns before displaying
+            display_df = make_columns_unique(display_df)
             st.dataframe(display_df, use_container_width=True, height=600)
             
             st.markdown("---")
