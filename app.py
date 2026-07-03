@@ -1,1210 +1,901 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import re
 from datetime import datetime
-import numpy as np
-import time
-import io
-from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
+import requests
+from io import StringIO, BytesIO
 import warnings
-
 warnings.filterwarnings('ignore')
 
-# ==================== PAGE CONFIG ====================
+# ══════════════════════════════════════════════
+# PAGE CONFIG
+# ══════════════════════════════════════════════
 st.set_page_config(
-    page_title="Ultimate Pro Dashboard",
-    page_icon="📊",
+    page_title="🏭 Bangalore Warehouse Dashboard",
+    page_icon="🏭",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ==================== SESSION STATE ====================
-if 'data' not in st.session_state:
-    st.session_state.data = None
-if 'clean_data' not in st.session_state:
-    st.session_state.clean_data = None
-if 'refresh_count' not in st.session_state:
-    st.session_state.refresh_count = 0
-if 'theme_color' not in st.session_state:
-    st.session_state.theme_color = "#667eea"
-
-# ==================== HELPER FUNCTIONS ====================
-
-@st.cache_data
-def load_csv(file):
-    """Load CSV file safely"""
-    try:
-        df = pd.read_csv(file, on_bad_lines='skip')
-        if df.empty:
-            st.error("❌ File is empty!")
-            return None
-        return df
-    except Exception as e:
-        st.error(f"❌ Error reading CSV: {str(e)}")
-        return None
-
-@st.cache_data
-def load_excel(file):
-    """Load Excel file safely"""
-    try:
-        df = pd.read_excel(file)
-        if df.empty:
-            st.error("❌ File is empty!")
-            return None
-        return df
-    except Exception as e:
-        st.error(f"❌ Error reading Excel: {str(e)}")
-        return None
-
-@st.cache_data
-def load_url_data(url):
-    """Load data from URL (CSV or Google Sheets)"""
-    try:
-        if 'docs.google.com/spreadsheets' in url:
-            if '/edit' in url:
-                url = url.replace('/edit#gid=', '/export?format=csv&gid=')
-                url = url.replace('/edit?usp=sharing', '/export?format=csv')
-                url = url.replace('/edit', '/export?format=csv')
-        
-        df = pd.read_csv(url, timeout=10)
-        if df.empty:
-            st.error("❌ URL data is empty!")
-            return None
-        return df
-    except Exception as e:
-        st.error(f"❌ Error loading URL: {str(e)}")
-        return None
-
-def generate_sample_data():
-    """Generate sample inventory data"""
-    np.random.seed(42)
-    sample_data = {
-        'ITEM': [f'Product_{i}' for i in range(1, 51)],
-        'CODE': [f'PRD-{i:03d}' for i in range(1, 51)],
-        'CATEGORY': np.random.choice(['Raw Material', 'Finished Goods', 'Semi-Finished', 'Work in Progress'], 50),
-        'SUPPLIER': np.random.choice(['Supplier A', 'Supplier B', 'Supplier C', 'Supplier D'], 50),
-        'SAFETY_STOCK': np.random.randint(100, 1000, 50),
-        'OPENING_STOCK': np.random.randint(500, 5000, 50),
-        'RECEIVED': np.random.randint(0, 2000, 50),
-        'ISSUED': np.random.randint(0, 3000, 50),
-        'CLOSING_STOCK': np.random.randint(0, 5000, 50),
-        'PRICE': np.random.uniform(10, 500, 50).round(2),
-        'STATUS': np.random.choice(['Active', 'Inactive', 'Discontinued'], 50)
-    }
-    return pd.DataFrame(sample_data)
-
-def validate_data(df):
-    """Validate data quality"""
-    issues = []
+# ══════════════════════════════════════════════
+# CSS STYLING
+# ══════════════════════════════════════════════
+st.markdown("""
+<style>
+    .main { background-color: #f8f9fa; }
     
-    if df.empty:
-        issues.append("⚠️ Dataset is empty")
-    elif len(df) < 2:
-        issues.append("⚠️ Less than 2 rows of data")
-    
-    if df.isnull().all().any():
-        null_cols = df.columns[df.isnull().all()].tolist()
-        issues.append(f"⚠️ Columns entirely empty: {', '.join(null_cols)}")
-    
-    return issues
-
-def make_columns_unique(df):
-    """Ensure all column names are unique - CRITICAL FIX for pyarrow compatibility"""
-    if df.columns.duplicated().any():
-        cols = pd.Series(df.columns)
-        for dup in cols[cols.duplicated()].unique():
-            count = 0
-            for i, col in enumerate(cols):
-                if col == dup:
-                    if count > 0:
-                        cols.iloc[i] = f"{col}_{count}"
-                    count += 1
-        df.columns = cols
-    return df
-
-def clean_data(df, options):
-    """Enhanced data cleaning with error handling"""
-    original_rows = len(df)
-    duplicates_removed = 0
-    missing_filled = 0
-    
-    try:
-        # Step 1: Standardize columns FIRST
-        if options.get('standardize', True):
-            df.columns = df.columns.str.strip().str.upper().str.replace(' ', '_')
-        
-        # Step 2: Get column types AFTER standardization
-        object_cols = df.select_dtypes(include=['object']).columns.tolist()
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        
-        # Step 3: Trim spaces safely
-        if options.get('trim', True) and len(object_cols) > 0:
-            for col in object_cols:
-                try:
-                    if col in df.columns:
-                        df[col] = df[col].astype(str).str.strip()
-                except Exception as e:
-                    print(f"Could not trim {col}: {e}")
-        
-        # Step 4: Remove duplicates
-        if options.get('duplicates', True):
-            before = len(df)
-            df = df.drop_duplicates()
-            duplicates_removed = before - len(df)
-        
-        # Step 5: Fill missing values
-        if options.get('missing', True):
-            missing_filled = df.isnull().sum().sum()
-            
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = df[col].fillna(0)
-            
-            for col in object_cols:
-                if col in df.columns:
-                    df[col] = df[col].fillna('N/A')
-        
-        # Step 6: Remove special characters
-        if options.get('special', False):
-            for col in object_cols:
-                try:
-                    if col in df.columns:
-                        df[col] = df[col].astype(str).str.replace(r'[^\w\s]', '', regex=True)
-                except Exception as e:
-                    print(f"Could not remove special chars from {col}: {e}")
-        
-        # Step 7: Auto convert to numeric where possible
-        for col in df.columns:
-            try:
-                if df[col].dtype == 'object':
-                    converted = pd.to_numeric(df[col], errors='coerce')
-                    if converted.notna().sum() / len(df) > 0.8:
-                        df[col] = converted
-            except Exception as e:
-                pass
-        
-    except Exception as e:
-        st.error(f"❌ Error during cleaning: {str(e)}")
-        print(f"Full error: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    return df, {
-        'original_rows': original_rows,
-        'final_rows': len(df),
-        'duplicates_removed': duplicates_removed,
-        'missing_filled': missing_filled
-    }
-
-def create_chart_safely(chart_type, df, x_axis, y_axis, color_by, numeric_cols, text_cols, top_n=10):
-    """Create charts with error handling"""
-    try:
-        if x_axis not in df.columns or y_axis not in df.columns:
-            st.warning("⚠️ Selected columns not found in data")
-            return None
-        
-        if chart_type == "Bar Chart":
-            data = df.nlargest(top_n, y_axis) if y_axis in numeric_cols else df.head(top_n)
-            fig = px.bar(data, x=x_axis, y=y_axis, color=color_by or y_axis,
-                        color_continuous_scale='Viridis', title=f"{y_axis} by {x_axis}")
-        
-        elif chart_type == "Horizontal Bar":
-            data = df.nlargest(top_n, y_axis)
-            fig = px.bar(data, x=y_axis, y=x_axis, orientation='h', color=color_by or y_axis,
-                        color_continuous_scale='Viridis', title=f"Top {top_n} - {y_axis}")
-        
-        elif chart_type == "Pie Chart":
-            data = df.nlargest(top_n, y_axis)
-            fig = px.pie(data, names=x_axis, values=y_axis, title=f"Distribution of {y_axis}")
-        
-        elif chart_type == "Donut Chart":
-            data = df.nlargest(top_n, y_axis)
-            fig = px.pie(data, names=x_axis, values=y_axis, hole=0.5, 
-                        title=f"Distribution of {y_axis}")
-        
-        elif chart_type == "Line Chart":
-            fig = px.line(df.head(50), x=x_axis, y=y_axis, color=color_by, 
-                         markers=True, title=f"{y_axis} Trend")
-        
-        elif chart_type == "Area Chart":
-            fig = px.area(df.head(50), x=x_axis, y=y_axis, color=color_by,
-                         title=f"{y_axis} Area Chart")
-        
-        elif chart_type == "Scatter Plot":
-            fig = px.scatter(df, x=x_axis, y=y_axis, color=color_by, size=y_axis,
-                           title=f"{x_axis} vs {y_axis}")
-        
-        elif chart_type == "Bubble Chart":
-            fig = px.scatter(df, x=x_axis, y=y_axis, size=y_axis, color=color_by,
-                           title=f"Bubble Chart: {x_axis} vs {y_axis}")
-        
-        elif chart_type == "Histogram":
-            fig = px.histogram(df, x=y_axis, nbins=30, color=color_by,
-                             title=f"Distribution of {y_axis}")
-        
-        elif chart_type == "Box Plot":
-            fig = px.box(df, y=y_axis, color=color_by,
-                        title=f"Box Plot of {y_axis}")
-        
-        elif chart_type == "Violin Plot":
-            fig = px.violin(df, y=y_axis, color=color_by, box=True,
-                           title=f"Violin Plot of {y_axis}")
-        
-        elif chart_type == "Heatmap":
-            if len(numeric_cols) > 1:
-                corr = df[numeric_cols].corr()
-                fig = px.imshow(corr, text_auto=True, aspect='auto',
-                              color_continuous_scale='RdBu_r', title="Correlation Heatmap")
-            else:
-                st.warning("Need at least 2 numeric columns for heatmap")
-                return None
-        
-        elif chart_type == "Treemap":
-            data = df.nlargest(top_n, y_axis) if y_axis in numeric_cols else df.head(top_n)
-            fig = px.treemap(data, path=[x_axis], values=y_axis,
-                           title=f"Treemap of {y_axis} by {x_axis}")
-        
-        elif chart_type == "Sunburst":
-            if len(text_cols) >= 2:
-                fig = px.sunburst(df.head(30), path=text_cols[:2], values=y_axis,
-                                 title="Sunburst Chart")
-            else:
-                fig = px.sunburst(df.head(30), path=[x_axis], values=y_axis,
-                                 title="Sunburst Chart")
-        
-        elif chart_type == "Funnel Chart":
-            data = df.nlargest(top_n, y_axis)
-            fig = px.funnel(data, x=y_axis, y=x_axis,
-                          title=f"Funnel Chart: {y_axis}")
-        
-        elif chart_type == "Waterfall":
-            data = df.nlargest(10, y_axis)
-            fig = px.bar(data, x=x_axis, y=y_axis, 
-                        title=f"Waterfall: {y_axis}")
-        
-        else:
-            st.warning(f"Chart type '{chart_type}' not implemented")
-            return None
-        
-        fig.update_layout(
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            height=500,
-            showlegend=True,
-            font=dict(size=11)
-        )
-        return fig
-    
-    except Exception as e:
-        st.error(f"❌ Chart error: {str(e)}")
-        return None
-
-def create_excel_with_formatting(df, filename):
-    """Create formatted Excel file"""
-    try:
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='Data', index=False)
-            
-            workbook = writer.book
-            worksheet = writer.sheets['Data']
-            
-            for column in worksheet.columns:
-                max_length = 0
-                column_letter = column[0].column_letter
-                for cell in column:
-                    try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(str(cell.value))
-                    except:
-                        pass
-                adjusted_width = min(max_length + 2, 50)
-                worksheet.column_dimensions[column_letter].width = adjusted_width
-        
-        output.seek(0)
-        return output.getvalue()
-    except Exception as e:
-        st.error(f"❌ Error creating Excel: {str(e)}")
-        return None
-
-def get_column_memory(df):
-    """Get memory usage per column"""
-    try:
-        memory_per_col = []
-        for col in df.columns:
-            memory_per_col.append(df[col].memory_usage(deep=True))
-        return memory_per_col
-    except:
-        return [0] * len(df.columns)
-
-# ==================== SIDEBAR ====================
-with st.sidebar:
-    st.title("⚙️ Control Panel")
-    st.markdown("---")
-    
-    # THEME SELECTION
-    st.subheader("🎨 Theme & Colors")
-    theme = st.selectbox("Choose Theme", [
-        "Professional Blue", 
-        "Dark Mode", 
-        "Ocean", 
-        "Sunset", 
-        "Forest", 
-        "Purple",
-        "Mint",
-        "Custom"
-    ])
-    
-    color_themes = {
-        "Professional Blue": ("#667eea", "#764ba2", "#00cc00"),
-        "Dark Mode": ("#1e1e1e", "#333333", "#4CAF50"),
-        "Ocean": ("#0077be", "#00a8cc", "#7fdbff"),
-        "Sunset": ("#ff6b6b", "#feca57", "#ff9ff3"),
-        "Forest": ("#2d5016", "#73a942", "#aad576"),
-        "Purple": ("#9b59b6", "#8e44ad", "#3498db"),
-        "Mint": ("#1abc9c", "#16a085", "#27ae60"),
-    }
-    
-    if theme == "Custom":
-        primary_color = st.color_picker("Primary Color", "#667eea")
-        secondary_color = st.color_picker("Secondary Color", "#764ba2")
-        accent_color = st.color_picker("Accent Color", "#00cc00")
-    else:
-        primary_color, secondary_color, accent_color = color_themes[theme]
-    
-    st.session_state.theme_color = primary_color
-    
-    st.markdown("---")
-    
-    # AUTO REFRESH
-    st.subheader("🔄 Auto Refresh")
-    auto_refresh = st.checkbox("Enable Auto-Refresh", value=False)
-    refresh_seconds = st.slider("Refresh every (seconds)", 5, 300, 30)
-    
-    st.markdown("---")
-    
-    # DATA SOURCE
-    st.subheader("📁 Data Source")
-    data_source = st.radio("Choose Source", ["Upload File", "Live URL", "Sample Data"])
-    
-    st.markdown("---")
-    
-    # AUTO CLEAN OPTIONS
-    st.subheader("🧹 Auto-Clean Options")
-    remove_duplicates = st.checkbox("Remove Duplicates", value=True)
-    fill_missing = st.checkbox("Fill Missing Values", value=True)
-    trim_spaces = st.checkbox("Trim Spaces", value=True)
-    standardize_case = st.checkbox("Standardize Columns", value=True)
-    remove_special = st.checkbox("Remove Special Characters", value=False)
-    
-    st.markdown("---")
-    
-    # DISPLAY OPTIONS
-    st.subheader("🖥️ Display")
-    show_kpis = st.checkbox("Show KPIs", value=True)
-    show_alerts = st.checkbox("Show Alerts", value=True)
-    show_charts = st.checkbox("Show Charts", value=True)
-    show_pivot = st.checkbox("Show Pivot", value=True)
-    show_stats = st.checkbox("Show Statistics", value=True)
-    show_raw = st.checkbox("Show Raw Data", value=True)
-    
-    st.markdown("---")
-    st.info(f"🔄 Refresh Count: {st.session_state.refresh_count}")
-
-# ==================== CUSTOM CSS ====================
-st.markdown(f"""
-    <style>
-    .stApp {{
-        background: linear-gradient(135deg, {primary_color}15 0%, {secondary_color}15 100%);
-    }}
-    .main-header {{
-        background: linear-gradient(135deg, {primary_color} 0%, {secondary_color} 100%);
-        padding: 30px;
-        border-radius: 15px;
+    .top-header {
+        background: linear-gradient(135deg, #1e3c72, #2a5298);
+        padding: 20px 30px;
+        border-radius: 12px;
+        margin-bottom: 20px;
         color: white;
-        text-align: center;
-        margin-bottom: 30px;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-    }}
-    .kpi-card {{
+    }
+    .top-header h1 { 
+        color: white; 
+        margin: 0; 
+        font-size: 2rem;
+    }
+    .top-header p { 
+        color: #ccd6f6; 
+        margin: 5px 0 0 0; 
+    }
+    
+    .kpi-card {
         background: white;
         padding: 20px;
-        border-radius: 10px;
-        border-left: 5px solid {primary_color};
-        box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-        margin-bottom: 15px;
-    }}
-    .alert-critical {{
-        background: linear-gradient(135deg, #ff6b6b 0%, #ff4757 100%);
-        color: white;
-        padding: 15px;
-        border-radius: 10px;
-        margin: 10px 0;
+        border-radius: 12px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        text-align: center;
+        border-top: 4px solid #2a5298;
+        height: 120px;
+    }
+    .kpi-critical { border-top-color: #dc3545 !important; }
+    .kpi-warning  { border-top-color: #fd7e14 !important; }
+    .kpi-ok       { border-top-color: #28a745 !important; }
+    
+    .kpi-number {
+        font-size: 2.5rem;
         font-weight: bold;
-    }}
-    .alert-warning {{
-        background: linear-gradient(135deg, #feca57 0%, #ff9ff3 100%);
-        color: white;
-        padding: 15px;
-        border-radius: 10px;
-        margin: 10px 0;
-        font-weight: bold;
-    }}
-    .alert-success {{
-        background: linear-gradient(135deg, #1abc9c 0%, #16a085 100%);
-        color: white;
-        padding: 15px;
-        border-radius: 10px;
-        margin: 10px 0;
-        font-weight: bold;
-    }}
-    .stTabs [data-baseweb="tab-list"] {{
-        gap: 10px;
-    }}
-    .stTabs [data-baseweb="tab"] {{
-        background-color: white;
-        border-radius: 10px;
-        padding: 10px 20px;
+        color: #1e3c72;
+        line-height: 1;
+    }
+    .kpi-label {
+        font-size: 0.85rem;
+        color: #6c757d;
+        margin-top: 8px;
+    }
+    
+    .status-badge {
+        padding: 4px 10px;
+        border-radius: 20px;
+        font-size: 0.78rem;
         font-weight: 600;
-    }}
-    .stTabs [aria-selected="true"] {{
-        background: linear-gradient(135deg, {primary_color} 0%, {secondary_color} 100%);
+    }
+    .badge-critical { background:#ffe0e0; color:#dc3545; }
+    .badge-warning  { background:#fff3cd; color:#856404; }
+    .badge-low      { background:#fff9c4; color:#7a6200; }
+    .badge-ok       { background:#d4edda; color:#155724; }
+    
+    .section-title {
+        font-size: 1.2rem;
+        font-weight: 700;
+        color: #1e3c72;
+        border-left: 4px solid #2a5298;
+        padding-left: 10px;
+        margin: 20px 0 15px 0;
+    }
+    
+    .alert-box {
+        background: #fff5f5;
+        border: 1px solid #ffcccc;
+        border-radius: 8px;
+        padding: 12px 16px;
+        margin: 5px 0;
+    }
+    
+    .live-badge {
+        background: #28a745;
         color: white;
-    }}
-    .metric-card {{
+        padding: 3px 10px;
+        border-radius: 20px;
+        font-size: 0.75rem;
+        animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+        0%   { opacity: 1; }
+        50%  { opacity: 0.5; }
+        100% { opacity: 1; }
+    }
+    
+    .source-card {
+        background: white;
+        border: 2px dashed #2a5298;
+        border-radius: 12px;
+        padding: 20px;
+        text-align: center;
+        cursor: pointer;
+    }
+    .source-card:hover { background: #f0f4ff; }
+    
+    div[data-testid="stMetric"] {
         background: white;
         padding: 15px;
         border-radius: 10px;
-        text-align: center;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-    }}
-    </style>
+        box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+    }
+    
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 5px;
+        background: white;
+        padding: 5px;
+        border-radius: 10px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px;
+        padding: 8px 16px;
+    }
+    
+    footer { visibility: hidden; }
+</style>
 """, unsafe_allow_html=True)
 
-# ==================== HEADER ====================
-st.markdown("""
-<div class="main-header">
-    <h1>📊 Ultimate Professional Dashboard</h1>
-    <p>Auto-Clean | Live Data | Advanced Analytics | Real-time Updates</p>
+# ══════════════════════════════════════════════
+# GOOGLE SHEETS CONFIG
+# ══════════════════════════════════════════════
+
+# 🔑 PUT YOUR GOOGLE SHEET ID HERE
+# Get it from your sheet URL:
+# https://docs.google.com/spreadsheets/d/[THIS_PART]/edit
+GOOGLE_SHEET_ID = st.secrets.get(
+    "GOOGLE_SHEET_ID", 
+    ""  # Empty = will ask user
+)
+
+SHEET_NAME = st.secrets.get("SHEET_NAME", "Sheet1")
+
+def get_google_sheet_url(sheet_id, sheet_name="Sheet1"):
+    """Build CSV export URL from Google Sheet."""
+    return (
+        f"https://docs.google.com/spreadsheets/d/{sheet_id}"
+        f"/gviz/tq?tqx=out:csv&sheet={sheet_name}"
+    )
+
+@st.cache_data(ttl=300)  # Cache 5 minutes
+def load_from_google_sheets(sheet_id, sheet_name="Sheet1"):
+    """Load data directly from Google Sheets."""
+    try:
+        url = get_google_sheet_url(sheet_id, sheet_name)
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        df = pd.read_csv(StringIO(response.text))
+        return df, None, url
+    except Exception as e:
+        return None, str(e), None
+
+@st.cache_data(ttl=300)
+def load_from_upload(file_bytes, file_name):
+    """Load from uploaded file - cached so no re-upload needed."""
+    try:
+        if file_name.endswith('.csv'):
+            df = pd.read_csv(BytesIO(file_bytes))
+        else:
+            df = pd.read_excel(BytesIO(file_bytes), engine='openpyxl')
+        return df, None
+    except Exception as e:
+        return None, str(e)
+
+# ══════════════════════════════════════════════
+# DATA PROCESSING
+# ══════════════════════════════════════════════
+
+def clean_val(v):
+    """Clean any value to float."""
+    try:
+        if pd.isna(v): return 0.0
+        s = str(v).strip()
+        if s in ('#NAME?','#VALUE!','#REF!','#DIV/0!','#N/A','','-','N/A'):
+            return 0.0
+        s = s.replace(',','').replace(' ','')
+        return float(s)
+    except:
+        return 0.0
+
+def find_column(df, candidates):
+    """Find column by multiple possible names."""
+    cols_upper = {c.upper().strip().replace(' ','_'): c for c in df.columns}
+    for cand in candidates:
+        key = cand.upper().strip().replace(' ','_')
+        if key in cols_upper:
+            return cols_upper[key]
+        # Partial match
+        for col_key, col_name in cols_upper.items():
+            if key in col_key or col_key in key:
+                return col_name
+    return None
+
+def process_df(df):
+    """Process and clean the dataframe."""
+    result = pd.DataFrame()
+
+    # Find columns flexibly
+    col_month = find_column(df, ['MONTH','Month','MNTH'])
+    col_code  = find_column(df, ['CODE','Code','ITEM_CODE','ItemCode'])
+    col_item  = find_column(df, ['ITEM','Item','ITEM_NAME','ItemName','Description'])
+    col_lead  = find_column(df, ['AVG_LEAD_TIME','Avg Lead Time','LEAD_TIME','LeadTime'])
+    col_safe  = find_column(df, ['SAFETY_STOCK','Safety Stock','SAFETY'])
+    col_open  = find_column(df, ['OPENING_STOCK','Opening Stock','OPENING','Open'])
+    col_req   = find_column(df, ['MONTH_REQUIREMENT','Month Requirement','REQUIREMENT','REQ'])
+    col_recv  = find_column(df, ['RECEIVED','Received','RECV'])
+    col_bal   = find_column(df, ['BAL_REQUIRED','Bal required','BALANCE','BAL'])
+    col_issue = find_column(df, ['ISSUED','Issued','ISSUE'])
+    col_close = find_column(df, ['CLOSING_STOCK','Closing Stock','CLOSING','Close'])
+
+    # Build result
+    result['MONTH']   = df[col_month].astype(str).str.strip() if col_month else 'Unknown'
+    result['CODE']    = df[col_code].astype(str).str.strip()  if col_code  else 'N/A'
+    result['ITEM']    = df[col_item].astype(str).str.strip()  if col_item  else 'Unknown'
+
+    num_map = {
+        'AVG_LEAD_TIME': col_lead,
+        'SAFETY_STOCK':  col_safe,
+        'OPENING_STOCK': col_open,
+        'MONTH_REQ':     col_req,
+        'RECEIVED':      col_recv,
+        'BAL_REQ':       col_bal,
+        'ISSUED':        col_issue,
+        'CLOSING_STOCK': col_close,
+    }
+
+    for field, col in num_map.items():
+        if col:
+            result[field] = df[col].apply(clean_val)
+        else:
+            result[field] = 0.0
+
+    # Recalculate Closing Stock if zero/missing
+    mask = result['CLOSING_STOCK'] == 0
+    result.loc[mask, 'CLOSING_STOCK'] = (
+        result.loc[mask, 'OPENING_STOCK'] +
+        result.loc[mask, 'RECEIVED'] -
+        result.loc[mask, 'ISSUED']
+    )
+
+    # Recalculate Balance
+    result['BAL_REQ'] = (result['MONTH_REQ'] - result['RECEIVED']).clip(lower=0)
+
+    # Fill #NAME? Lead Times by prefix
+    def guess_lead(code):
+        c = str(code).upper()
+        if 'GB' in c: return 45
+        if 'GD' in c or 'GR' in c: return 30
+        if 'RM-19' in c: return 15
+        if 'RM' in c:    return 12
+        if 'SFG' in c:   return 7
+        return 14
+
+    mask_lead = result['AVG_LEAD_TIME'] == 0
+    result.loc[mask_lead, 'AVG_LEAD_TIME'] = (
+        result.loc[mask_lead, 'CODE'].apply(guess_lead)
+    )
+
+    # Category
+    def get_cat(code):
+        c = str(code).upper()
+        if 'RM-19' in c or 'PERF' in c: return 'Perfumes'
+        if 'RM-06' in c: return 'Colours'
+        if 'SFG-06' in c: return 'Diluted Perfumes'
+        if 'RM-25' in c or 'RM-20' in c: return 'Raw Materials'
+        if c.startswith('GD') or c.startswith('GR') or \
+           c.startswith('GU') or c.startswith('GB'): return 'Gums'
+        if c.startswith('DB') or c.startswith('BKRL') or \
+           c.startswith('DBC'): return 'Damarbattu'
+        if c.startswith('OL') or c.startswith('DEP'): return 'Oils'
+        if c.startswith('SFG'): return 'SFG'
+        if c.startswith('CPN'): return 'Compound'
+        return 'Other'
+
+    result['CATEGORY'] = result['CODE'].apply(get_cat)
+
+    # Status
+    def get_status(row):
+        cs = row['CLOSING_STOCK']
+        ss = row['SAFETY_STOCK']
+        mr = row['MONTH_REQ']
+        if cs < 0:                         return '🔴 CRITICAL'
+        if ss > 0 and cs < ss:             return '🟠 BELOW SAFETY'
+        if mr > 0 and cs < (mr * 0.25):   return '🟡 LOW'
+        if mr > 0 and cs < (mr * 0.5):    return '🟡 MEDIUM'
+        return '🟢 OK'
+
+    result['STATUS'] = result.apply(get_status, axis=1)
+
+    # Month ordering
+    mo = {'Jan':1,'Feb':2,'Mar':3,'Apr':4,'May':5,'Jun':6,
+          'Jul':7,'Aug':8,'Sep':9,'Oct':10,'Nov':11,'Dec':12}
+    result['MONTH_NUM'] = result['MONTH'].map(mo).fillna(0).astype(int)
+
+    # Remove empty rows
+    result = result[result['CODE'] != 'N/A']
+    result = result[result['ITEM'] != 'Unknown']
+    result = result.dropna(subset=['CODE'])
+    result = result.reset_index(drop=True)
+
+    return result
+
+# ══════════════════════════════════════════════
+# SIDEBAR
+# ══════════════════════════════════════════════
+
+with st.sidebar:
+    st.markdown("## 🏭 Warehouse IMS")
+    st.markdown("---")
+
+    # Data Source Selection
+    st.markdown("### 📡 Data Source")
+    data_source = st.radio(
+        "Choose Source",
+        ["📊 Google Sheets (Live)", "📁 Upload File"],
+        index=0
+    )
+
+    df_raw  = None
+    source_info = ""
+
+    # ── Google Sheets ──────────────────────────
+    if "Google Sheets" in data_source:
+        st.markdown("#### Google Sheets Settings")
+
+        sheet_id = st.text_input(
+            "Sheet ID",
+            value=GOOGLE_SHEET_ID,
+            placeholder="Paste your Google Sheet ID here",
+            help="From URL: docs.google.com/spreadsheets/d/[ID]/edit"
+        )
+        sheet_name = st.text_input(
+            "Sheet Name",
+            value=SHEET_NAME,
+            placeholder="Sheet1"
+        )
+
+        if sheet_id:
+            with st.spinner("🔄 Loading from Google Sheets..."):
+                df_raw, err, url = load_from_google_sheets(
+                    sheet_id, sheet_name
+                )
+            if err:
+                st.error(f"❌ {err}")
+                st.markdown("""
+                **Check:**
+                - Sheet is shared (Anyone with link)
+                - Sheet ID is correct
+                - Sheet name matches
+                """)
+            else:
+                st.success(f"✅ Connected! {len(df_raw)} rows")
+                source_info = f"🟢 Google Sheets • {len(df_raw)} rows"
+
+            # How to find Sheet ID
+            with st.expander("❓ How to get Sheet ID"):
+                st.markdown("""
+                1. Open your Google Sheet
+                2. Look at the URL:
+                ```
+                .../spreadsheets/d/[SHEET_ID]/edit
+                ```
+                3. Copy the ID and paste above
+                
+                **Make sheet public:**
+                - Click Share (top right)
+                - Change to "Anyone with link"
+                - Set to "Viewer"
+                """)
+        else:
+            st.info("👆 Enter your Google Sheet ID above")
+
+    # ── File Upload ────────────────────────────
+    else:
+        st.markdown("#### Upload File")
+
+        # Session state to keep file
+        if 'uploaded_bytes' not in st.session_state:
+            st.session_state.uploaded_bytes = None
+            st.session_state.uploaded_name  = None
+
+        uploaded = st.file_uploader(
+            "Excel / CSV",
+            type=['xlsx','xls','csv','xlsm'],
+            help="File stays loaded until you refresh"
+        )
+
+        if uploaded:
+            # Save to session state
+            st.session_state.uploaded_bytes = uploaded.read()
+            st.session_state.uploaded_name  = uploaded.name
+            st.success(f"✅ {uploaded.name} saved!")
+
+        # Use session state file
+        if st.session_state.uploaded_bytes:
+            df_raw, err = load_from_upload(
+                st.session_state.uploaded_bytes,
+                st.session_state.uploaded_name
+            )
+            if err:
+                st.error(f"❌ {err}")
+            else:
+                fn = st.session_state.uploaded_name
+                source_info = f"📁 {fn} • {len(df_raw)} rows"
+                st.info(f"📁 Using: {fn}")
+
+            if st.button("🗑️ Clear File"):
+                st.session_state.uploaded_bytes = None
+                st.session_state.uploaded_name  = None
+                st.rerun()
+
+    st.markdown("---")
+
+    # ── Filters (shown after data loaded) ─────
+    if df_raw is not None:
+        st.markdown("### 🔍 Filters")
+        try:
+            df_proc = process_df(df_raw)
+
+            months = ['All'] + sorted(
+                [m for m in df_proc['MONTH'].unique()
+                 if m not in ('Unknown','nan','')],
+                key=lambda x: {'Jan':1,'Feb':2,'Mar':3,'Apr':4,
+                               'May':5,'Jun':6,'Jul':7,'Aug':8,
+                               'Sep':9,'Oct':10,'Nov':11,'Dec':12}.get(x,99)
+            )
+            cats    = ['All'] + sorted(df_proc['CATEGORY'].unique())
+            statuses= ['All','🔴 CRITICAL','🟠 BELOW SAFETY',
+                       '🟡 LOW','🟡 MEDIUM','🟢 OK']
+
+            sel_month  = st.selectbox("📅 Month",    months)
+            sel_cat    = st.selectbox("📦 Category", cats)
+            sel_status = st.selectbox("🚦 Status",   statuses)
+            min_close  = st.slider(
+                "Min Closing Stock", 0,
+                int(df_proc['CLOSING_STOCK'].max()+1), 0
+            )
+        except Exception as e:
+            st.error(f"Filter error: {e}")
+            df_proc = None
+            sel_month = sel_cat = sel_status = 'All'
+            min_close = 0
+    else:
+        df_proc = None
+        sel_month = sel_cat = sel_status = 'All'
+        min_close = 0
+
+    st.markdown("---")
+
+    # ── Auto Refresh ───────────────────────────
+    st.markdown("### 🔄 Auto Refresh")
+    auto_ref  = st.checkbox("Enable Auto-Refresh")
+    ref_secs  = st.slider("Interval (seconds)", 30, 300, 60)
+
+    if auto_ref:
+        import time
+        st.info(f"🔄 Refreshing every {ref_secs}s")
+        time.sleep(ref_secs)
+        st.cache_data.clear()
+        st.rerun()
+
+    st.markdown("---")
+    st.caption(f"🕐 {datetime.now().strftime('%d %b %Y %H:%M:%S')}")
+
+# ══════════════════════════════════════════════
+# MAIN CONTENT
+# ══════════════════════════════════════════════
+
+# ── Header ────────────────────────────────────
+st.markdown(f"""
+<div class="top-header">
+    <h1>🏭 Bangalore Warehouse Dashboard</h1>
+    <p>
+        {source_info if source_info else "No data loaded yet"} &nbsp;|&nbsp;
+        <span class="live-badge">● LIVE</span> &nbsp;|&nbsp;
+        Updated: {datetime.now().strftime('%d %b %Y %H:%M')}
+    </p>
 </div>
 """, unsafe_allow_html=True)
 
-# ==================== DATA LOADING ====================
-df = None
-
-if data_source == "Upload File":
-    uploaded_file = st.file_uploader(
-        "📁 Upload Excel/CSV File",
-        type=['csv', 'xlsx', 'xlsm', 'xls'],
-        help="Supports Excel and CSV formats"
-    )
-    
-    if uploaded_file:
-        if uploaded_file.name.endswith('.csv'):
-            df = load_csv(uploaded_file)
-        else:
-            df = load_excel(uploaded_file)
-        
-        if df is not None:
-            st.session_state.data = df
-            st.success(f"✅ Loaded {len(df)} rows × {len(df.columns)} columns")
-
-elif data_source == "Live URL":
-    url = st.text_input(
-        "📎 Paste Google Sheets or CSV URL",
-        help="Make sheet public: File → Share → Anyone with link → Viewer"
-    )
-    st.info("💡 For Google Sheets: Replace '/edit' with '/export?format=csv'")
-    
-    if url and st.button("🔄 Load URL Data"):
-        with st.spinner("Loading data..."):
-            df = load_url_data(url)
-            if df is not None:
-                st.session_state.data = df
-                st.success(f"✅ Loaded {len(df)} rows × {len(df.columns)} columns")
-
-elif data_source == "Sample Data":
-    if st.button("📊 Generate Sample Data"):
-        df = generate_sample_data()
-        st.session_state.data = df
-        st.success(f"✅ Sample data loaded! {len(df)} rows × {len(df.columns)} columns")
-
-# ==================== MAIN DASHBOARD ====================
-if st.session_state.data is not None:
-    df_raw = st.session_state.data.copy()
-    
-    # Validate data
-    validation_issues = validate_data(df_raw)
-    if validation_issues:
-        st.warning("⚠️ Data Issues Detected:")
-        for issue in validation_issues:
-            st.warning(issue)
-    
-    # AUTO CLEAN
-    clean_options = {
-        'duplicates': remove_duplicates,
-        'missing': fill_missing,
-        'trim': trim_spaces,
-        'standardize': standardize_case,
-        'special': remove_special
-    }
-    
-    df, clean_stats = clean_data(df_raw.copy(), clean_options)
-    st.session_state.clean_data = df
-    
-    # Ensure unique columns before any display
-    df = make_columns_unique(df)
-    
-    # Show cleaning stats
-    with st.expander("🧹 Data Cleaning Report", expanded=False):
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Original Rows", f"{clean_stats['original_rows']:,}")
-        with col2:
-            st.metric("Cleaned Rows", f"{clean_stats['final_rows']:,}")
-        with col3:
-            st.metric("Duplicates Removed", clean_stats['duplicates_removed'])
-        with col4:
-            st.metric("Missing Filled", clean_stats['missing_filled'])
-        
-        st.markdown("---")
-        st.markdown("### 📊 Data Info")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Null Values", df.isnull().sum().sum())
-        with col2:
-            st.metric("Duplicate Rows", df.duplicated().sum())
-        with col3:
-            st.metric("Memory Usage", f"{df.memory_usage(deep=True).sum() / 1024:.2f} KB")
-    
-    # Get column types
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    text_cols = df.select_dtypes(include=['object']).columns.tolist()
-    
-    # ==================== TABS ====================
-    tabs = st.tabs([
-        "📈 Live KPIs", 
-        "🚨 Alerts", 
-        "📊 Charts", 
-        "🔄 Pivot", 
-        "📉 Statistics", 
-        "🔍 Filter", 
-        "📋 Raw Data", 
-        "📥 Export"
-    ])
-    
-    # ========== TAB 1: KPIs ==========
-    with tabs[0]:
-        if show_kpis:
-            st.subheader("📈 Real-Time Key Performance Indicators")
-            
-            # Overview metrics
-            st.markdown("### 📊 Overview Metrics")
-            cols = st.columns(4)
-            
-            with cols[0]:
-                st.metric("📦 Total Records", f"{len(df):,}")
-            with cols[1]:
-                st.metric("📊 Columns", len(df.columns))
-            with cols[2]:
-                st.metric("🔢 Numeric Fields", len(numeric_cols))
-            with cols[3]:
-                st.metric("📝 Text Fields", len(text_cols))
-            
-            st.markdown("---")
-            
-            # Numeric columns analysis
-            if numeric_cols:
-                st.markdown("### 🔢 Numeric Analysis")
-                
-                num_cols_display = numeric_cols[:8]
-                num_tabs = st.tabs([f"📊 {col[:20]}" for col in num_cols_display])
-                
-                for i, col in enumerate(num_tabs):
-                    if i < len(num_cols_display):
-                        col_name = num_cols_display[i]
-                        with col:
-                            c1, c2, c3, c4, c5, c6 = st.columns(6)
-                            
-                            with c1:
-                                st.metric("Sum", f"{df[col_name].sum():,.0f}")
-                            with c2:
-                                st.metric("Avg", f"{df[col_name].mean():,.2f}")
-                            with c3:
-                                st.metric("Median", f"{df[col_name].median():,.2f}")
-                            with c4:
-                                st.metric("Max", f"{df[col_name].max():,.0f}")
-                            with c5:
-                                st.metric("Min", f"{df[col_name].min():,.0f}")
-                            with c6:
-                                st.metric("Std Dev", f"{df[col_name].std():,.2f}")
-                            
-                            fig = px.histogram(df, x=col_name, nbins=20, title=f"Distribution of {col_name}")
-                            st.plotly_chart(fig, use_container_width=True, height=300)
-            
-            # Text columns analysis
-            if text_cols:
-                st.markdown("---")
-                st.markdown("### 📝 Text Analysis")
-                
-                for col in text_cols[:3]:
-                    with st.expander(f"📊 {col} - Value Counts"):
-                        value_counts = df[col].value_counts()
-                        col1, col2 = st.columns([1, 2])
-                        
-                        with col1:
-                            st.dataframe(value_counts.head(10), use_container_width=True)
-                        
-                        with col2:
-                            fig = px.bar(x=value_counts.head(10).index, 
-                                       y=value_counts.head(10).values,
-                                       labels={'x': col, 'y': 'Count'},
-                                       title=f"Top 10 - {col}")
-                            st.plotly_chart(fig, use_container_width=True, height=300)
-        else:
-            st.info("KPIs display is disabled. Enable in sidebar settings.")
-    
-    # ========== TAB 2: ALERTS ==========
-    with tabs[1]:
-        if show_alerts:
-            st.subheader("🚨 Alerts & Warnings")
-            
-            alerts_found = False
-            
-            for col in numeric_cols:
-                zero_count = (df[col] == 0).sum()
-                if zero_count > 0:
-                    alerts_found = True
-                    if zero_count > len(df) * 0.3:
-                        st.markdown(f"""
-                        <div class="alert-warning">
-                            <h3>⚠️ WARNING: {zero_count} ({zero_count/len(df)*100:.1f}%) values are ZERO in {col}</h3>
-                        </div>
-                        """, unsafe_allow_html=True)
-            
-            # Custom alert for inventory-like data
-            if 'CLOSING_STOCK' in df.columns and 'SAFETY_STOCK' in df.columns:
-                try:
-                    critical = df[df['CLOSING_STOCK'] < df['SAFETY_STOCK']]
-                    if len(critical) > 0:
-                        alerts_found = True
-                        st.markdown(f"""
-                        <div class="alert-critical">
-                            <h3>🔴 CRITICAL: {len(critical)} items below safety stock!</h3>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        st.dataframe(critical, use_container_width=True)
-                except:
-                    pass
-            
-            # Dead stock
-            if 'ISSUED' in df.columns and 'RECEIVED' in df.columns:
-                try:
-                    dead = df[(df['ISSUED'] == 0) & (df['RECEIVED'] == 0)]
-                    if len(dead) > 0:
-                        alerts_found = True
-                        st.markdown(f"""
-                        <div class="alert-warning">
-                            <h3>⚠️ WARNING: {len(dead)} items with NO MOVEMENT (Dead Stock)</h3>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        st.dataframe(dead, use_container_width=True)
-                except:
-                    pass
-            
-            # Out of stock
-            if 'CLOSING_STOCK' in df.columns:
-                try:
-                    out_stock = df[df['CLOSING_STOCK'] == 0]
-                    if len(out_stock) > 0:
-                        alerts_found = True
-                        st.markdown(f"""
-                        <div class="alert-critical">
-                            <h3>🔴 CRITICAL: {len(out_stock)} items are OUT OF STOCK!</h3>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        st.dataframe(out_stock, use_container_width=True)
-                except:
-                    pass
-            
-            if not alerts_found:
-                st.markdown("""
-                <div class="alert-success">
-                    <h3>✅ No Alerts! Everything looks good!</h3>
-                </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.info("Alerts display is disabled. Enable in sidebar settings.")
-    
-    # ========== TAB 3: CHARTS ==========
-    with tabs[2]:
-        if show_charts:
-            st.subheader("📊 Advanced Visualizations")
-            
-            col1, col2 = st.columns([1, 3])
-            
-            with col1:
-                chart_type = st.selectbox("Chart Type", [
-                    "Bar Chart", "Horizontal Bar", "Pie Chart", "Donut Chart",
-                    "Line Chart", "Area Chart", "Scatter Plot", "Bubble Chart",
-                    "Histogram", "Box Plot", "Violin Plot", "Heatmap",
-                    "Treemap", "Sunburst", "Funnel Chart", "Waterfall"
-                ])
-                
-                if numeric_cols and text_cols:
-                    x_axis = st.selectbox("X-Axis", [None] + df.columns.tolist(), key="chart_x")
-                    y_axis = st.selectbox("Y-Axis", [None] + numeric_cols, key="chart_y")
-                    color_by = st.selectbox("Color By", [None] + df.columns.tolist(), key="chart_color")
-                    top_n = st.slider("Top N", 5, 50, 15)
-                else:
-                    x_axis = text_cols[0] if text_cols else None
-                    y_axis = numeric_cols[0] if numeric_cols else None
-                    color_by = None
-                    top_n = 15
-            
-            with col2:
-                if x_axis and y_axis:
-                    fig = create_chart_safely(chart_type, df, x_axis, y_axis, color_by, numeric_cols, text_cols, top_n)
-                    if fig:
-                        st.plotly_chart(fig, use_container_width=True)
-                else:
-                    st.warning("⚠️ Need to select both X and Y axes")
-            
-            st.markdown("---")
-            
-            # Quick charts
-            st.markdown("### 📊 Quick Auto-Charts")
-            
-            if numeric_cols and text_cols:
-                chart_col1, chart_col2, chart_col3 = st.columns(3)
-                
-                with chart_col1:
-                    fig1 = create_chart_safely("Bar Chart", df, text_cols[0], numeric_cols[0], 
-                                              None, numeric_cols, text_cols, 10)
-                    if fig1:
-                        st.plotly_chart(fig1, use_container_width=True, height=300)
-                
-                with chart_col2:
-                    fig2 = create_chart_safely("Pie Chart", df, text_cols[0], numeric_cols[0], 
-                                              None, numeric_cols, text_cols, 10)
-                    if fig2:
-                        st.plotly_chart(fig2, use_container_width=True, height=300)
-                
-                with chart_col3:
-                    if len(numeric_cols) > 1:
-                        fig3 = create_chart_safely("Scatter Plot", df, numeric_cols[0], numeric_cols[1], 
-                                                  None, numeric_cols, text_cols)
-                        if fig3:
-                            st.plotly_chart(fig3, use_container_width=True, height=300)
-                
-                # More charts
-                if len(numeric_cols) >= 2:
-                    chart_col1, chart_col2 = st.columns(2)
-                    
-                    with chart_col1:
-                        fig4 = create_chart_safely("Histogram", df, numeric_cols[0], numeric_cols[0], 
-                                                  None, numeric_cols, text_cols)
-                        if fig4:
-                            st.plotly_chart(fig4, use_container_width=True, height=300)
-                    
-                    with chart_col2:
-                        fig5 = px.box(df, y=numeric_cols[0], title=f"Box Plot - {numeric_cols[0]}")
-                        st.plotly_chart(fig5, use_container_width=True, height=300)
-                    
-                    # Heatmap
-                    if len(numeric_cols) > 2:
-                        corr = df[numeric_cols].corr()
-                        fig6 = px.imshow(corr, text_auto=True, aspect='auto',
-                                       color_continuous_scale='RdBu_r', title="Correlation Heatmap")
-                        st.plotly_chart(fig6, use_container_width=True)
-        else:
-            st.info("Charts display is disabled. Enable in sidebar settings.")
-    
-    # ========== TAB 4: PIVOT ==========
-    with tabs[3]:
-        if show_pivot:
-            st.subheader("🔄 Advanced Pivot Table Analysis")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                pivot_rows = st.multiselect("📊 Rows", text_cols, 
-                                           default=text_cols[:1] if text_cols else [],
-                                           key="pivot_rows")
-            
-            with col2:
-                pivot_cols = st.multiselect("📋 Columns", text_cols, key="pivot_cols")
-            
-            with col3:
-                pivot_values = st.multiselect("🔢 Values", numeric_cols, 
-                                            default=numeric_cols[:1] if numeric_cols else [],
-                                            key="pivot_values")
-            
-            with col4:
-                pivot_agg = st.selectbox("⚡ Aggregation", 
-                                        ["sum", "mean", "count", "max", "min", "median", "std"])
-            
-            if pivot_rows and pivot_values:
-                try:
-                    pivot_table = pd.pivot_table(
-                        df,
-                        index=pivot_rows,
-                        columns=pivot_cols if pivot_cols else None,
-                        values=pivot_values,
-                        aggfunc=pivot_agg,
-                        fill_value=0,
-                        margins=True,
-                        margins_name='TOTAL'
-                    )
-                    
-                    # Handle duplicate column names from pivot with margins
-                    pivot_table = make_columns_unique(pivot_table.reset_index())
-                    
-                    st.markdown("### 📊 Pivot Result")
-                    st.dataframe(pivot_table, use_container_width=True, height=400)
-                    
-                    # Download
-                    pivot_csv = pivot_table.to_csv()
-                    st.download_button("📥 Download Pivot (CSV)", pivot_csv, f"pivot_{datetime.now():%Y%m%d_%H%M%S}.csv", "text/csv")
-                    
-                except Exception as e:
-                    st.error(f"❌ Pivot error: {str(e)}")
-            else:
-                st.info("👆 Select Rows and Values to create pivot table")
-        else:
-            st.info("Pivot display is disabled. Enable in sidebar settings.")
-    
-    # ========== TAB 5: STATISTICS ==========
-    with tabs[4]:
-        if show_stats:
-            st.subheader("📉 Statistical Analysis")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("### 📊 Descriptive Statistics")
-                desc_stats = df.describe(include='all').T
-                st.dataframe(desc_stats, use_container_width=True)
-            
-            with col2:
-                st.markdown("### 📈 Data Type Summary")
-                dtype_summary = pd.DataFrame({
-                    'Data Type': df.dtypes.value_counts().index.astype(str),
-                    'Count': df.dtypes.value_counts().values
-                })
-                st.dataframe(dtype_summary, use_container_width=True, hide_index=True)
-            
-            st.markdown("---")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("### 🔢 Column Statistics")
-                if numeric_cols:
-                    selected_col = st.selectbox("Select Column", numeric_cols, key="stats_col")
-                    
-                    mode_val = df[selected_col].mode()
-                    mode_display = f"{mode_val.iloc[0]:,.2f}" if not mode_val.empty else "N/A"
-                    
-                    stats_data = {
-                        'Metric': [
-                            'Count', 'Sum', 'Mean', 'Median', 'Mode', 
-                            'Std Dev', 'Variance', 'Min', 'Q1', 'Q3', 
-                            'Max', 'Range', 'IQR', 'Skewness', 'Kurtosis'
-                        ],
-                        'Value': [
-                            str(df[selected_col].count()),
-                            f"{df[selected_col].sum():,.2f}",
-                            f"{df[selected_col].mean():,.2f}",
-                            f"{df[selected_col].median():,.2f}",
-                            mode_display,
-                            f"{df[selected_col].std():,.2f}",
-                            f"{df[selected_col].var():,.2f}",
-                            f"{df[selected_col].min():,.2f}",
-                            f"{df[selected_col].quantile(0.25):,.2f}",
-                            f"{df[selected_col].quantile(0.75):,.2f}",
-                            f"{df[selected_col].max():,.2f}",
-                            f"{df[selected_col].max() - df[selected_col].min():,.2f}",
-                            f"{df[selected_col].quantile(0.75) - df[selected_col].quantile(0.25):,.2f}",
-                            f"{df[selected_col].skew():,.2f}",
-                            f"{df[selected_col].kurtosis():,.2f}"
-                        ]
-                    }
-                    stats_df = pd.DataFrame(stats_data)
-                    st.dataframe(stats_df, use_container_width=True, hide_index=True)
-            
-            with col2:
-                st.markdown("### 📈 Distribution")
-                if numeric_cols:
-                    fig = px.histogram(df, x=selected_col, nbins=30, marginal="box", 
-                                     title=f"Distribution of {selected_col}")
-                    st.plotly_chart(fig, use_container_width=True)
-            
-            st.markdown("---")
-            st.markdown("### 🔗 Correlation Analysis")
-            if len(numeric_cols) > 1:
-                corr = df[numeric_cols].corr()
-                fig = px.imshow(corr, text_auto=True, aspect="auto", color_continuous_scale='RdBu_r',
-                              title="Correlation Matrix", labels=dict(color="Correlation"))
-                st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Statistics display is disabled. Enable in sidebar settings.")
-    
-    # ========== TAB 6: FILTER & QUERY ==========
-    with tabs[5]:
-        st.subheader("🔍 Advanced Filter & Query")
-        
-        # Global search
-        search = st.text_input("🔍 Global Search (searches all columns)", placeholder="Type to search...")
-        
-        # Multiple column filters
-        st.markdown("### 🎯 Column Filters")
-        
-        num_filters = st.slider("Number of filters", 1, 5, 1, key="filter_count")
-        
-        filters = {}
-        for i in range(num_filters):
-            col1, col2 = st.columns(2)
-            with col1:
-                filter_col = st.selectbox(f"Column {i+1}", df.columns.tolist(), key=f"filter_col_{i}")
-            with col2:
-                if filter_col in numeric_cols:
-                    min_v = float(df[filter_col].min())
-                    max_v = float(df[filter_col].max())
-                    filters[filter_col] = st.slider(f"Range for {filter_col}", 
-                                                    min_v, max_v, (min_v, max_v), key=f"filter_range_{i}")
-                else:
-                    unique_vals = sorted(df[filter_col].astype(str).unique().tolist())
-                    default_vals = unique_vals[:5] if len(unique_vals) > 5 else unique_vals
-                    filters[filter_col] = st.multiselect(f"Select values", unique_vals, 
-                                                         default=default_vals, key=f"filter_multi_{i}")
-        
-        # Apply filters
-        filtered_df = df.copy()
-        
-        for col, val in filters.items():
-            if col in numeric_cols:
-                filtered_df = filtered_df[(filtered_df[col] >= val[0]) & (filtered_df[col] <= val[1])]
-            else:
-                if val:
-                    filtered_df = filtered_df[filtered_df[col].astype(str).isin(val)]
-        
-        if search:
-            search_filter = filtered_df.astype(str).apply(
-                lambda x: x.str.contains(search, case=False, na=False)
-            ).any(axis=1)
-            filtered_df = filtered_df[search_filter]
-        
-        st.markdown(f"### 📋 Results: {len(filtered_df):,} rows ({len(filtered_df)/len(df)*100:.1f}%)")
-        
-        col1, col2 = st.columns([3, 1])
-        with col2:
-            st.info(f"Original: {len(df):,} rows")
-        
-        st.dataframe(filtered_df, use_container_width=True, height=500)
-        
-        # Download
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            csv_filtered = filtered_df.to_csv(index=False)
-            st.download_button("📥 CSV", csv_filtered, f"filtered_{datetime.now():%Y%m%d_%H%M%S}.csv")
-        with col2:
-            json_filtered = filtered_df.to_json(orient='records', indent=2)
-            st.download_button("📋 JSON", json_filtered, f"filtered_{datetime.now():%Y%m%d_%H%M%S}.json")
-        with col3:
-            excel_filtered = create_excel_with_formatting(filtered_df, "filtered")
-            if excel_filtered:
-                st.download_button("📊 Excel", excel_filtered, 
-                                 f"filtered_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
-    
-    # ========== TAB 7: RAW DATA ==========
-    with tabs[6]:
-        if show_raw:
-            st.subheader("📋 Complete Raw Data")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Rows", f"{len(df):,}")
-            with col2:
-                st.metric("Columns", len(df.columns))
-            with col3:
-                st.metric("Missing Values", df.isnull().sum().sum())
-            with col4:
-                st.metric("Duplicate Rows", df.duplicated().sum())
-            
-            # Search within data
-            st.markdown("---")
-            search_data = st.text_input("🔍 Search in raw data", key="raw_search")
-            if search_data:
-                search_filter = df.astype(str).apply(
-                    lambda x: x.str.contains(search_data, case=False, na=False)
-                ).any(axis=1)
-                display_df = df[search_filter]
-            else:
-                display_df = df
-            
-            st.dataframe(display_df, use_container_width=True, height=600)
-            
-            st.markdown("---")
-            st.markdown("### 📊 Column Information")
-            
-            # FIXED: Build DataFrame safely with correct array lengths
-            try:
-                info_data = {
-                    'Column': df.columns.tolist(),
-                    'Type': df.dtypes.astype(str).tolist(),
-                    'Non-Null': df.count().tolist(),
-                    'Null': df.isnull().sum().tolist(),
-                    'Null %': (df.isnull().sum() / len(df) * 100).round(2).tolist(),
-                    'Unique': df.nunique().tolist(),
-                }
-                info_df = pd.DataFrame(info_data)
-                st.dataframe(info_df, use_container_width=True, hide_index=True)
-            except Exception as e:
-                st.warning(f"⚠️ Could not generate column info: {str(e)}")
-        else:
-            st.info("Raw data display is disabled. Enable in sidebar settings.")
-    
-    # ========== TAB 8: EXPORT ==========
-    with tabs[7]:
-        st.subheader("📥 Export Options")
-        
-        st.markdown("### 📊 Export Full Dataset")
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            csv = df.to_csv(index=False)
-            st.download_button(
-                "📄 CSV",
-                csv,
-                f"data_{datetime.now():%Y%m%d_%H%M%S}.csv",
-                "text/csv",
-                use_container_width=True
-            )
-        
-        with col2:
-            json_data = df.to_json(orient='records', indent=2)
-            st.download_button(
-                "📋 JSON",
-                json_data,
-                f"data_{datetime.now():%Y%m%d_%H%M%S}.json",
-                "application/json",
-                use_container_width=True
-            )
-        
-        with col3:
-            excel_data = create_excel_with_formatting(df, "data")
-            if excel_data:
-                st.download_button(
-                    "📊 Excel",
-                    excel_data,
-                    f"data_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-        
-        with col4:
-            parquet_data = df.to_parquet(index=False)
-            st.download_button(
-                "⚡ Parquet",
-                parquet_data,
-                f"data_{datetime.now():%Y%m%d_%H%M%S}.parquet",
-                "application/octet-stream",
-                use_container_width=True
-            )
-        
-        st.markdown("---")
-        st.markdown("### 📋 Export Summary")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**Dataset Summary**")
-            summary_text = f"""
-            - **Rows:** {len(df):,}
-            - **Columns:** {len(df.columns)}
-            - **File Size:** {df.memory_usage(deep=True).sum() / 1024:.2f} KB
-            - **Export Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-            """
-            st.markdown(summary_text)
-        
-        with col2:
-            st.markdown("**Column Types**")
-            type_counts = df.dtypes.value_counts()
-            for dtype, count in type_counts.items():
-                st.markdown(f"- **{dtype}:** {count} columns")
-    
-    # ==================== AUTO REFRESH ====================
-    if auto_refresh:
-        st.session_state.refresh_count += 1
-        col1, col2 = st.columns([3, 1])
-        with col2:
-            st.info(f"🔄 Auto-refresh in {refresh_seconds}s...")
-        time.sleep(refresh_seconds)
-        st.rerun()
-
-else:
-    # Landing page
-    st.markdown("""
-    <div class="main-header" style="text-align: center;">
-        <h2>👋 Welcome to Ultimate Professional Dashboard</h2>
-        <p>Start by uploading a file, providing a URL, or using sample data</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown(f"""
-        <div class="kpi-card">
-            <h3>🚀 Features</h3>
-            <ul>
-                <li>✅ Auto-Clean Data</li>
-                <li>✅ Live Updates</li>
-                <li>✅ 15+ Chart Types</li>
-                <li>✅ Excel-like Pivot</li>
-                <li>✅ Advanced Filters</li>
-            </ul>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown(f"""
-        <div class="kpi-card">
-            <h3>🎨 Customization</h3>
-            <ul>
-                <li>✅ 8 Color Themes</li>
-                <li>✅ Custom Colors</li>
-                <li>✅ Auto-Refresh Control</li>
-                <li>✅ Toggle Features</li>
-                <li>✅ Responsive Design</li>
-            </ul>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown(f"""
-        <div class="kpi-card">
-            <h3>📊 Analytics</h3>
-            <ul>
-                <li>✅ Real-time KPIs</li>
-                <li>✅ Statistics</li>
-                <li>✅ Correlation Analysis</li>
-                <li>✅ Alert System</li>
-                <li>✅ Multi-Format Export</li>
-            </ul>
-        </div>
-        """, unsafe_allow_html=True)
-    
+# ── No Data State ─────────────────────────────
+if df_proc is None:
     st.markdown("---")
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.success("✅ Supports: CSV, Excel, Google Sheets")
-    with col2:
-        st.info("ℹ️ Auto-cleans data on upload")
-    with col3:
-        st.warning("⚠️ No data sent to external servers")
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.markdown("""
+        <div class="source-card">
+            <h2>📊</h2>
+            <h3>Google Sheets (Recommended)</h3>
+            <p>Live data • No upload needed • Auto-refresh</p>
+            <ol style="text-align:left">
+                <li>Upload Excel to Google Sheets</li>
+                <li>Share → Anyone with link</li>
+                <li>Paste Sheet ID in sidebar</li>
+                <li>Dashboard updates automatically!</li>
+            </ol>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with c2:
+        st.markdown("""
+        <div class="source-card">
+            <h2>📁</h2>
+            <h3>Upload File</h3>
+            <p>Upload once → stays loaded in session</p>
+            <ol style="text-align:left">
+                <li>Select "Upload File" in sidebar</li>
+                <li>Upload your Excel/CSV</li>
+                <li>File is saved in session</li>
+                <li>No need to re-upload!</li>
+            </ol>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.stop()
+
+# ── Apply Filters ─────────────────────────────
+fdf = df_proc.copy()
+if sel_month  != 'All': fdf = fdf[fdf['MONTH']    == sel_month]
+if sel_cat    != 'All': fdf = fdf[fdf['CATEGORY'] == sel_cat]
+if sel_status != 'All': fdf = fdf[fdf['STATUS']   == sel_status]
+if min_close  > 0:      fdf = fdf[fdf['CLOSING_STOCK'] >= min_close]
+
+if len(fdf) == 0:
+    st.warning("⚠️ No data matches your filters. Adjust the sidebar filters.")
+    st.stop()
+
+# ── KPI Row ───────────────────────────────────
+total     = len(fdf)
+critical  = len(fdf[fdf['STATUS'] == '🔴 CRITICAL'])
+below_saf = len(fdf[fdf['STATUS'] == '🟠 BELOW SAFETY'])
+low       = len(fdf[fdf['STATUS'].isin(['🟡 LOW','🟡 MEDIUM'])])
+ok        = len(fdf[fdf['STATUS'] == '🟢 OK'])
+total_rcv = fdf['RECEIVED'].sum()
+total_iss = fdf['ISSUED'].sum()
+total_req = fdf['MONTH_REQ'].sum()
+
+k = st.columns(7)
+k[0].metric("📦 Total Items",    f"{total:,}")
+k[1].metric("🔴 Critical",       f"{critical:,}")
+k[2].metric("🟠 Below Safety",   f"{below_saf:,}")
+k[3].metric("🟡 Low/Medium",     f"{low:,}")
+k[4].metric("🟢 OK",             f"{ok:,}")
+k[5].metric("📥 Total Received", f"{total_rcv:,.0f}")
+k[6].metric("📤 Total Issued",   f"{total_iss:,.0f}")
+
+st.markdown("---")
+
+# ── TABS ──────────────────────────────────────
+tab1,tab2,tab3,tab4,tab5 = st.tabs([
+    "📊 Overview",
+    "🚨 Alerts",
+    "📈 Trends",
+    "🔍 Item Detail",
+    "📋 Full Data"
+])
+
+# ════════════════════════════════
+# TAB 1 - OVERVIEW
+# ════════════════════════════════
+with tab1:
+    r1c1, r1c2 = st.columns(2)
+
+    with r1c1:
+        st.markdown('<div class="section-title">Stock Status Distribution</div>',
+                    unsafe_allow_html=True)
+        sc = fdf['STATUS'].value_counts().reset_index()
+        sc.columns = ['Status','Count']
+        colors = {
+            '🔴 CRITICAL':     '#dc3545',
+            '🟠 BELOW SAFETY': '#fd7e14',
+            '🟡 LOW':          '#ffc107',
+            '🟡 MEDIUM':       '#ffe066',
+            '🟢 OK':           '#28a745',
+        }
+        fig1 = px.pie(sc, names='Status', values='Count',
+                      color='Status', color_discrete_map=colors,
+                      hole=0.45)
+        fig1.update_layout(margin=dict(t=10,b=10,l=0,r=0),
+                           showlegend=True,
+                           legend=dict(orientation='h'))
+        st.plotly_chart(fig1, use_container_width=True)
+
+    with r1c2:
+        st.markdown('<div class="section-title">Items by Category</div>',
+                    unsafe_allow_html=True)
+        cat_df = fdf.groupby('CATEGORY').size().reset_index(name='Count')
+        cat_df = cat_df.sort_values('Count', ascending=True)
+        fig2 = px.bar(cat_df, x='Count', y='CATEGORY',
+                      orientation='h', color='Count',
+                      color_continuous_scale='Blues', text='Count')
+        fig2.update_traces(textposition='outside')
+        fig2.update_layout(margin=dict(t=10,b=10,l=0,r=0),
+                           coloraxis_showscale=False)
+        st.plotly_chart(fig2, use_container_width=True)
+
+    r2c1, r2c2 = st.columns(2)
+
+    with r2c1:
+        st.markdown('<div class="section-title">Received vs Requirement</div>',
+                    unsafe_allow_html=True)
+        cat_stock = fdf.groupby('CATEGORY').agg(
+            Received=('RECEIVED','sum'),
+            Requirement=('MONTH_REQ','sum'),
+            Issued=('ISSUED','sum')
+        ).reset_index()
+        fig3 = go.Figure()
+        fig3.add_bar(name='Received',    x=cat_stock['CATEGORY'],
+                     y=cat_stock['Received'],    marker_color='#28a745')
+        fig3.add_bar(name='Issued',      x=cat_stock['CATEGORY'],
+                     y=cat_stock['Issued'],      marker_color='#2196F3')
+        fig3.add_bar(name='Requirement', x=cat_stock['CATEGORY'],
+                     y=cat_stock['Requirement'], marker_color='#dc3545')
+        fig3.update_layout(
+            barmode='group',
+            margin=dict(t=10,b=50,l=0,r=0),
+            xaxis_tickangle=-30,
+            legend=dict(orientation='h', y=-0.35)
+        )
+        st.plotly_chart(fig3, use_container_width=True)
+
+    with r2c2:
+        st.markdown('<div class="section-title">Avg Lead Time by Category</div>',
+                    unsafe_allow_html=True)
+        lt = fdf[fdf['AVG_LEAD_TIME']>0].groupby('CATEGORY').agg(
+            Lead=('AVG_LEAD_TIME','mean')
+        ).reset_index().sort_values('Lead')
+        if len(lt):
+            fig4 = px.bar(lt, x='Lead', y='CATEGORY',
+                          orientation='h',
+                          color='Lead',
+                          color_continuous_scale='RdYlGn_r',
+                          text=lt['Lead'].round(1))
+            fig4.update_traces(textposition='outside')
+            fig4.update_layout(margin=dict(t=10,b=10,l=0,r=0),
+                               coloraxis_showscale=False)
+            st.plotly_chart(fig4, use_container_width=True)
+
+# ════════════════════════════════
+# TAB 2 - ALERTS
+# ════════════════════════════════
+with tab2:
+    st.markdown('<div class="section-title">🚨 Items Requiring Immediate Action</div>',
+                unsafe_allow_html=True)
+
+    alert_df = fdf[fdf['STATUS'].isin(
+        ['🔴 CRITICAL','🟠 BELOW SAFETY','🟡 LOW']
+    )].copy()
+
+    if len(alert_df):
+        a1, a2, a3 = st.columns(3)
+        crit_df  = alert_df[alert_df['STATUS']=='🔴 CRITICAL']
+        below_df = alert_df[alert_df['STATUS']=='🟠 BELOW SAFETY']
+        low_df   = alert_df[alert_df['STATUS']=='🟡 LOW']
+
+        a1.error(  f"🔴 **{len(crit_df)}** Critical items")
+        a2.warning(f"🟠 **{len(below_df)}** Below safety stock")
+        a3.info(   f"🟡 **{len(low_df)}** Low stock items")
+
+        st.markdown("---")
+
+        show_cols = ['CODE','ITEM','MONTH','CATEGORY','STATUS',
+                     'SAFETY_STOCK','OPENING_STOCK','RECEIVED',
+                     'ISSUED','CLOSING_STOCK','MONTH_REQ','BAL_REQ',
+                     'AVG_LEAD_TIME']
+        disp = alert_df[show_cols].copy()
+        disp.columns = ['Code','Item','Month','Category','Status',
+                        'Safety Stock','Opening','Received','Issued',
+                        'Closing','Requirement','Balance Req','Lead Days']
+
+        def highlight(row):
+            if '🔴' in str(row.get('Status','')):
+                return ['background-color:#ffe0e0']*len(row)
+            if '🟠' in str(row.get('Status','')):
+                return ['background-color:#fff3cd']*len(row)
+            if '🟡' in str(row.get('Status','')):
+                return ['background-color:#fffde7']*len(row)
+            return ['']*len(row)
+
+        styled = disp.style.apply(highlight, axis=1)\
+                           .format({
+                               'Safety Stock':  '{:,.0f}',
+                               'Opening':       '{:,.0f}',
+                               'Received':      '{:,.0f}',
+                               'Issued':        '{:,.0f}',
+                               'Closing':       '{:,.0f}',
+                               'Requirement':   '{:,.0f}',
+                               'Balance Req':   '{:,.0f}',
+                               'Lead Days':     '{:.0f}',
+                           })
+        st.dataframe(styled, use_container_width=True, height=400)
+
+        # Download
+        csv = disp.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            "⬇️ Download Alert Report",
+            csv, "alert_report.csv", "text/csv"
+        )
+    else:
+        st.success("✅ No critical items! All stock levels are healthy.")
+
+# ════════════════════════════════
+# TAB 3 - TRENDS
+# ════════════════════════════════
+with tab3:
+    st.markdown('<div class="section-title">📈 Monthly Trends</div>',
+                unsafe_allow_html=True)
+
+    monthly = df_proc.groupby(['MONTH','MONTH_NUM']).agg(
+        Received=('RECEIVED','sum'),
+        Issued=('ISSUED','sum'),
+        Requirement=('MONTH_REQ','sum'),
+        Closing=('CLOSING_STOCK','sum')
+    ).reset_index().sort_values('MONTH_NUM')
+
+    if len(monthly):
+        fig_t = go.Figure()
+        fig_t.add_bar(name='📥 Received',
+                      x=monthly['MONTH'], y=monthly['Received'],
+                      marker_color='#28a745')
+        fig_t.add_bar(name='📤 Issued',
+                      x=monthly['MONTH'], y=monthly['Issued'],
+                      marker_color='#2196F3')
+        fig_t.add_scatter(name='📋 Requirement',
+                          x=monthly['MONTH'], y=monthly['Requirement'],
+                          mode='lines+markers',
+                          line=dict(color='red', width=2, dash='dot'))
+        fig_t.add_scatter(name='🏦 Closing Stock',
+                          x=monthly['MONTH'], y=monthly['Closing'],
+                          mode='lines+markers',
+                          line=dict(color='purple', width=2))
+        fig_t.update_layout(
+            barmode='group', height=400,
+            margin=dict(t=20,b=20,l=0,r=0),
+            legend=dict(orientation='h', y=-0.2)
+        )
+        st.plotly_chart(fig_t, use_container_width=True)
+
+    # Category trends
+    st.markdown('<div class="section-title">Category-wise Monthly Stock</div>',
+                unsafe_allow_html=True)
+    cat_monthly = df_proc.groupby(['MONTH','MONTH_NUM','CATEGORY']).agg(
+        Closing=('CLOSING_STOCK','sum')
+    ).reset_index().sort_values('MONTH_NUM')
+
+    if len(cat_monthly):
+        fig_cm = px.line(cat_monthly, x='MONTH', y='Closing',
+                         color='CATEGORY', markers=True,
+                         title="Closing Stock by Category per Month")
+        fig_cm.update_layout(margin=dict(t=40,b=20,l=0,r=0),
+                             height=350)
+        st.plotly_chart(fig_cm, use_container_width=True)
+
+# ════════════════════════════════
+# TAB 4 - ITEM DETAIL
+# ════════════════════════════════
+with tab4:
+    st.markdown('<div class="section-title">🔍 Item Deep-Dive</div>',
+                unsafe_allow_html=True)
+
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        item_list = sorted(df_proc['ITEM'].unique().tolist())
+        sel_item  = st.selectbox("Select Item", item_list)
+    with col_s2:
+        item_data = df_proc[df_proc['ITEM'] == sel_item]\
+                    .sort_values('MONTH_NUM')
+        if len(item_data):
+            r = item_data.iloc[-1]
+            st.markdown(f"""
+            **Code:** `{r['CODE']}`  
+            **Category:** {r['CATEGORY']}  
+            **Status:** {r['STATUS']}  
+            **Lead Time:** {r['AVG_LEAD_TIME']:.0f} days
+            """)
+
+    if len(item_data):
+        m1,m2,m3,m4 = st.columns(4)
+        r = item_data.iloc[-1]
+        m1.metric("Opening Stock",  f"{r['OPENING_STOCK']:,.0f}")
+        m2.metric("Received",       f"{r['RECEIVED']:,.0f}")
+        m3.metric("Issued",         f"{r['ISSUED']:,.0f}")
+        m4.metric("Closing Stock",  f"{r['CLOSING_STOCK']:,.0f}",
+                  delta=f"{r['CLOSING_STOCK']-r['OPENING_STOCK']:,.0f}")
+
+        # Gauge
+        max_v = max(r['MONTH_REQ'], r['CLOSING_STOCK'], r['SAFETY_STOCK'], 1)
+        fig_g = go.Figure(go.Indicator(
+            mode="gauge+number+delta",
+            value=float(r['CLOSING_STOCK']),
+            delta={'reference': float(r['MONTH_REQ'])},
+            title={'text': "Closing Stock vs Requirement"},
+            gauge={
+                'axis':  {'range': [0, max_v * 1.3]},
+                'bar':   {'color': '#2196F3'},
+                'steps': [
+                    {'range': [0, float(r['SAFETY_STOCK'])],
+                     'color': '#ffcccc'},
+                    {'range': [float(r['SAFETY_STOCK']),
+                               float(r['MONTH_REQ'])],
+                     'color': '#fff9c4'},
+                    {'range': [float(r['MONTH_REQ']),
+                               max_v * 1.3], 'color': '#ccffcc'},
+                ],
+            }
+        ))
+        fig_g.update_layout(height=280, margin=dict(t=40,b=0,l=40,r=40))
+        st.plotly_chart(fig_g, use_container_width=True)
+
+        # Monthly trend
+        if len(item_data) > 1:
+            fig_it = px.line(
+                item_data, x='MONTH',
+                y=['OPENING_STOCK','RECEIVED','ISSUED','CLOSING_STOCK'],
+                markers=True, title=f"Monthly Trend: {sel_item}"
+            )
+            fig_it.update_layout(
+                height=300, margin=dict(t=50,b=20,l=0,r=0),
+                legend=dict(orientation='h', y=-0.3)
+            )
+            st.plotly_chart(fig_it, use_container_width=True)
+
+        # Data table for this item
+        st.dataframe(
+            item_data[['MONTH','OPENING_STOCK','RECEIVED',
+                        'ISSUED','CLOSING_STOCK','MONTH_REQ',
+                        'BAL_REQ','AVG_LEAD_TIME','STATUS']],
+            use_container_width=True
+        )
+
+# ════════════════════════════════
+# TAB 5 - FULL DATA
+# ════════════════════════════════
+with tab5:
+    st.markdown('<div class="section-title">📋 Complete Data Table</div>',
+                unsafe_allow_html=True)
+
+    # Search
+    search = st.text_input("🔎 Search (Item name or Code)",
+                           placeholder="Type to search...")
+    display = fdf.copy()
+    if search:
+        mask = (
+            display['ITEM'].str.contains(search, case=False, na=False) |
+            display['CODE'].str.contains(search, case=False, na=False)
+        )
+        display = display[mask]
+
+    st.markdown(f"Showing **{len(display)}** records")
+    st.dataframe(display, use_container_width=True, height=450)
+
+    # Downloads
+    d1, d2 = st.columns(2)
+    with d1:
+        csv_all = display.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            "⬇️ Download Filtered Data (CSV)",
+            csv_all, "warehouse_data.csv", "text/csv"
+        )
+    with d2:
+        csv_alert = fdf[fdf['STATUS'] != '🟢 OK']\
+                    .to_csv(index=False).encode('utf-8')
+        st.download_button(
+            "⬇️ Download Alert Items (CSV)",
+            csv_alert, "alerts.csv", "text/csv"
+        )
+
+# ── Footer ─────────────────────────────────────
+st.markdown("---")
+st.markdown(
+    f"<center>🏭 Bangalore Warehouse IMS • "
+    f"Powered by Streamlit • "
+    f"{datetime.now().year}</center>",
+    unsafe_allow_html=True
+)
