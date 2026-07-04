@@ -380,23 +380,38 @@ def load_csv(file_content, filename):
 
 
 def load_excel(file_content, filename):
-    """Load Excel — tries all sheets"""
+    """Load Excel with sheet selection"""
+
     try:
-        xl = pd.ExcelFile(io.BytesIO(file_content))
+        excel_file = io.BytesIO(file_content)
+        xl = pd.ExcelFile(excel_file)
+
+        # Get all sheet names
         sheet_names = xl.sheet_names
 
-        if len(sheet_names) > 1:
-            chosen = st.selectbox("Choose Sheet", sheet_names)
-        else:
-            chosen = sheet_names[0]
+        # Show sheet selector
+        chosen_sheet = st.selectbox(
+            "📑 Select Sheet",
+            sheet_names,
+            key="sheet_selector"
+        )
 
-        df = pd.read_excel(io.BytesIO(file_content), sheet_name=chosen)
+        # Read selected sheet
+        df = pd.read_excel(
+            io.BytesIO(file_content),
+            sheet_name=chosen_sheet,
+            engine="openpyxl"
+        )
+
         if df.empty:
-            st.error("❌ Sheet is empty")
+            st.warning(f"⚠️ '{chosen_sheet}' sheet is empty.")
             return None
+
+        st.success(f"✅ Loaded Sheet: {chosen_sheet}")
         return df
+
     except Exception as e:
-        st.error(f"❌ Excel error: {e}")
+        st.error(f"❌ Error loading Excel file: {e}")
         return None
 
 
