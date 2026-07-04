@@ -404,12 +404,39 @@ def load_excel(file_content, filename):
             key="sheet_selector"
         )
 
-        # Read selected sheet
-        df = pd.read_excel(
-            io.BytesIO(file_content),
-            sheet_name=chosen_sheet,
-            engine="openpyxl"
-        )
+# Read sheet first without header
+temp_df = pd.read_excel(
+    io.BytesIO(file_content),
+    sheet_name=chosen_sheet,
+    header=None,
+    engine="openpyxl"
+)
+
+# Find the first row that looks like a real header
+header_row = 0
+
+for i in range(min(15, len(temp_df))):
+    values = temp_df.iloc[i].astype(str)
+
+    non_empty = values[values.str.strip() != ""]
+
+    if len(non_empty) >= 3:
+        header_row = i
+        break
+
+# Read again using detected header
+df = pd.read_excel(
+    io.BytesIO(file_content),
+    sheet_name=chosen_sheet,
+    header=header_row,
+    engine="openpyxl"
+)
+
+# Remove completely empty rows
+df = df.dropna(how="all")
+
+# Remove completely empty columns
+df = df.dropna(axis=1, how="all")
 
         if df.empty:
             st.warning(f"⚠️ '{chosen_sheet}' sheet is empty.")
