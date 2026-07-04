@@ -49,16 +49,14 @@ def detect_and_fix_column_types(df):
     df = df.copy()
 
     for col in df.columns:
+        # Skip duplicate column names that return a DataFrame
+        if isinstance(df[col], pd.DataFrame):
+            continue
 
-    # Skip duplicate column names that return a DataFrame
-    if isinstance(df[col], pd.DataFrame):
-        continue
+        original_dtype = str(df[col].dtype)
+        sample = df[col].dropna().astype(str).head(100)
 
-    original_dtype = str(df[col].dtype)
-    sample = df[col].dropna().astype(str).head(100)
-
-    if df[col].dtype == 'object':
-
+        if df[col].dtype == 'object':
             # ── 1. Boolean Detection ──────────────────────────────
             bool_map = {
                 'yes': True, 'no': False,
