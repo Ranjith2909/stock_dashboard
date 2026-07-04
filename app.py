@@ -359,7 +359,7 @@ def deep_clean_data(df, options):
 
 # ==================== HELPER FUNCTIONS ====================
 
-@st.cache_data
+
 def load_csv(file_content, filename):
     """Load CSV with multiple encoding attempts"""
     encodings = ['utf-8', 'latin-1', 'cp1252', 'iso-8859-1']
@@ -378,7 +378,7 @@ def load_csv(file_content, filename):
     return None
 
 
-@st.cache_data
+
 def load_excel(file_content, filename):
     """Load Excel — tries all sheets"""
     try:
@@ -400,7 +400,7 @@ def load_excel(file_content, filename):
         return None
 
 
-@st.cache_data
+
 def load_url_data(url):
     """Load CSV or Google Sheets URL"""
     try:
