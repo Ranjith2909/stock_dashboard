@@ -190,10 +190,15 @@ def standardize_text_columns(df, cols):
     }
 
     for col in cols:
+
+        # Skip duplicate column names
+        if isinstance(df[col], pd.DataFrame):
+            continue
+
         if col not in df.columns:
             continue
-        original = df[col].copy()
 
+        original = df[col].copy()
         # Strip and normalize whitespace
         df[col] = (
             df[col].astype(str)
