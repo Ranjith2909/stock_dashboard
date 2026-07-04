@@ -49,10 +49,15 @@ def detect_and_fix_column_types(df):
     df = df.copy()
 
     for col in df.columns:
-        original_dtype = str(df[col].dtype)
-        sample = df[col].dropna().astype(str).head(100)
 
-        if df[col].dtype == 'object':
+    # Skip duplicate column names that return a DataFrame
+    if isinstance(df[col], pd.DataFrame):
+        continue
+
+    original_dtype = str(df[col].dtype)
+    sample = df[col].dropna().astype(str).head(100)
+
+    if df[col].dtype == 'object':
 
             # ── 1. Boolean Detection ──────────────────────────────
             bool_map = {
@@ -977,6 +982,9 @@ elif data_source == "Sample Data":
 # ==================== MAIN DASHBOARD ====================
 if st.session_state.data is not None:
     df_raw = st.session_state.data.copy()
+
+    # Fix duplicate column names before cleaning
+    df_raw = make_columns_unique(df_raw)
 
     # ── RUN DEEP CLEAN ────────────────────────────────────────────────
     with st.spinner("🧹 Running deep auto-clean…"):
