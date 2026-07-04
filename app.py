@@ -7,8 +7,6 @@ from datetime import datetime
 import numpy as np
 import time
 import io
-from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -79,12 +77,12 @@ def load_url_data(url):
         return None
 
 def generate_sample_data():
-    """Generate sample inventory data"""
+    """Generate sample inventory data based on the business workflow"""
     np.random.seed(42)
     sample_data = {
         'ITEM': [f'Product_{i}' for i in range(1, 51)],
         'CODE': [f'PRD-{i:03d}' for i in range(1, 51)],
-        'CATEGORY': np.random.choice(['Raw Material', 'Finished Goods', 'Semi-Finished', 'Work in Progress'], 50),
+        'CATEGORY': np.random.choice(['Raw Material', 'Finished Goods', 'Semi-Finished', 'Packing Material'], 50),
         'SUPPLIER': np.random.choice(['Supplier A', 'Supplier B', 'Supplier C', 'Supplier D'], 50),
         'SAFETY_STOCK': np.random.randint(100, 1000, 50),
         'OPENING_STOCK': np.random.randint(500, 5000, 50),
@@ -185,10 +183,9 @@ def clean_data(df, options):
                         df[col] = converted
             except Exception as e:
                 pass
-        
+                
     except Exception as e:
         st.error(f"❌ Error during cleaning: {str(e)}")
-        print(f"Full error: {e}")
         import traceback
         traceback.print_exc()
     
@@ -196,7 +193,7 @@ def clean_data(df, options):
         'original_rows': original_rows,
         'final_rows': len(df),
         'duplicates_removed': duplicates_removed,
-        'missing_filled': missing_filled
+        'missing_filled': int(missing_filled)
     }
 
 def create_chart_safely(chart_type, df, x_axis, y_axis, color_by, numeric_cols, text_cols, top_n=10):
@@ -209,12 +206,12 @@ def create_chart_safely(chart_type, df, x_axis, y_axis, color_by, numeric_cols, 
         if chart_type == "Bar Chart":
             data = df.nlargest(top_n, y_axis) if y_axis in numeric_cols else df.head(top_n)
             fig = px.bar(data, x=x_axis, y=y_axis, color=color_by or y_axis,
-                        color_continuous_scale='Viridis', title=f"{y_axis} by {x_axis}")
+                         color_continuous_scale='Viridis', title=f"{y_axis} by {x_axis}")
         
         elif chart_type == "Horizontal Bar":
             data = df.nlargest(top_n, y_axis)
             fig = px.bar(data, x=y_axis, y=x_axis, orientation='h', color=color_by or y_axis,
-                        color_continuous_scale='Viridis', title=f"Top {top_n} - {y_axis}")
+                         color_continuous_scale='Viridis', title=f"Top {top_n} - {y_axis}")
         
         elif chart_type == "Pie Chart":
             data = df.nlargest(top_n, y_axis)
@@ -223,41 +220,41 @@ def create_chart_safely(chart_type, df, x_axis, y_axis, color_by, numeric_cols, 
         elif chart_type == "Donut Chart":
             data = df.nlargest(top_n, y_axis)
             fig = px.pie(data, names=x_axis, values=y_axis, hole=0.5, 
-                        title=f"Distribution of {y_axis}")
+                         title=f"Distribution of {y_axis}")
         
         elif chart_type == "Line Chart":
             fig = px.line(df.head(50), x=x_axis, y=y_axis, color=color_by, 
-                         markers=True, title=f"{y_axis} Trend")
+                          markers=True, title=f"{y_axis} Trend")
         
         elif chart_type == "Area Chart":
             fig = px.area(df.head(50), x=x_axis, y=y_axis, color=color_by,
-                         title=f"{y_axis} Area Chart")
+                          title=f"{y_axis} Area Chart")
         
         elif chart_type == "Scatter Plot":
             fig = px.scatter(df, x=x_axis, y=y_axis, color=color_by, size=y_axis,
-                           title=f"{x_axis} vs {y_axis}")
+                             title=f"{x_axis} vs {y_axis}")
         
         elif chart_type == "Bubble Chart":
             fig = px.scatter(df, x=x_axis, y=y_axis, size=y_axis, color=color_by,
-                           title=f"Bubble Chart: {x_axis} vs {y_axis}")
+                             title=f"Bubble Chart: {x_axis} vs {y_axis}")
         
         elif chart_type == "Histogram":
             fig = px.histogram(df, x=y_axis, nbins=30, color=color_by,
-                             title=f"Distribution of {y_axis}")
+                               title=f"Distribution of {y_axis}")
         
         elif chart_type == "Box Plot":
             fig = px.box(df, y=y_axis, color=color_by,
-                        title=f"Box Plot of {y_axis}")
+                         title=f"Box Plot of {y_axis}")
         
         elif chart_type == "Violin Plot":
             fig = px.violin(df, y=y_axis, color=color_by, box=True,
-                           title=f"Violin Plot of {y_axis}")
+                            title=f"Violin Plot of {y_axis}")
         
         elif chart_type == "Heatmap":
             if len(numeric_cols) > 1:
                 corr = df[numeric_cols].corr()
                 fig = px.imshow(corr, text_auto=True, aspect='auto',
-                              color_continuous_scale='RdBu_r', title="Correlation Heatmap")
+                                color_continuous_scale='RdBu_r', title="Correlation Heatmap")
             else:
                 st.warning("Need at least 2 numeric columns for heatmap")
                 return None
@@ -265,25 +262,25 @@ def create_chart_safely(chart_type, df, x_axis, y_axis, color_by, numeric_cols, 
         elif chart_type == "Treemap":
             data = df.nlargest(top_n, y_axis) if y_axis in numeric_cols else df.head(top_n)
             fig = px.treemap(data, path=[x_axis], values=y_axis,
-                           title=f"Treemap of {y_axis} by {x_axis}")
+                             title=f"Treemap of {y_axis} by {x_axis}")
         
         elif chart_type == "Sunburst":
             if len(text_cols) >= 2:
                 fig = px.sunburst(df.head(30), path=text_cols[:2], values=y_axis,
-                                 title="Sunburst Chart")
+                                  title="Sunburst Chart")
             else:
                 fig = px.sunburst(df.head(30), path=[x_axis], values=y_axis,
-                                 title="Sunburst Chart")
+                                  title="Sunburst Chart")
         
         elif chart_type == "Funnel Chart":
             data = df.nlargest(top_n, y_axis)
             fig = px.funnel(data, x=y_axis, y=x_axis,
-                          title=f"Funnel Chart: {y_axis}")
+                            title=f"Funnel Chart: {y_axis}")
         
         elif chart_type == "Waterfall":
             data = df.nlargest(10, y_axis)
             fig = px.bar(data, x=x_axis, y=y_axis, 
-                        title=f"Waterfall: {y_axis}")
+                         title=f"Waterfall: {y_axis}")
         
         else:
             st.warning(f"Chart type '{chart_type}' not implemented")
@@ -330,15 +327,6 @@ def create_excel_with_formatting(df, filename):
         st.error(f"❌ Error creating Excel: {str(e)}")
         return None
 
-def get_column_memory(df):
-    """Get memory usage per column"""
-    try:
-        memory_per_col = []
-        for col in df.columns:
-            memory_per_col.append(df[col].memory_usage(deep=True))
-        return memory_per_col
-    except:
-        return [0] * len(df.columns)
 
 # ==================== SIDEBAR ====================
 with st.sidebar:
@@ -436,6 +424,10 @@ st.markdown(f"""
         border-left: 5px solid {primary_color};
         box-shadow: 0 5px 15px rgba(0,0,0,0.1);
         margin-bottom: 15px;
+        color: black;
+    }}
+    .kpi-card h3, .kpi-card ul {{
+        color: black;
     }}
     .alert-critical {{
         background: linear-gradient(135deg, #ff6b6b 0%, #ff4757 100%);
@@ -487,7 +479,7 @@ st.markdown(f"""
 # ==================== HEADER ====================
 st.markdown("""
 <div class="main-header">
-    <h1>📊 Ultimate Professional Dashboard</h1>
+    <h1>📊 Enterprise Inventory Dashboard</h1>
     <p>Auto-Clean | Live Data | Advanced Analytics | Real-time Updates</p>
 </div>
 """, unsafe_allow_html=True)
@@ -574,9 +566,9 @@ if st.session_state.data is not None:
         st.markdown("### 📊 Data Info")
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Null Values", df.isnull().sum().sum())
+            st.metric("Null Values", int(df.isnull().sum().sum()))
         with col2:
-            st.metric("Duplicate Rows", df.duplicated().sum())
+            st.metric("Duplicate Rows", int(df.duplicated().sum()))
         with col3:
             st.metric("Memory Usage", f"{df.memory_usage(deep=True).sum() / 1024:.2f} KB")
     
@@ -652,17 +644,17 @@ if st.session_state.data is not None:
                 
                 for col in text_cols[:3]:
                     with st.expander(f"📊 {col} - Value Counts"):
-                        value_counts = df[col].value_counts()
+                        value_counts = df[col].value_counts().reset_index()
+                        value_counts.columns = [col, 'Count']
                         col1, col2 = st.columns([1, 2])
                         
                         with col1:
                             st.dataframe(value_counts.head(10), use_container_width=True)
                         
                         with col2:
-                            fig = px.bar(x=value_counts.head(10).index, 
-                                       y=value_counts.head(10).values,
-                                       labels={'x': col, 'y': 'Count'},
-                                       title=f"Top 10 - {col}")
+                            fig = px.bar(value_counts.head(10), x=col, y='Count',
+                                         labels={'x': col, 'y': 'Count'},
+                                         title=f"Top 10 - {col}")
                             st.plotly_chart(fig, use_container_width=True, height=300)
         else:
             st.info("KPIs display is disabled. Enable in sidebar settings.")
@@ -675,7 +667,7 @@ if st.session_state.data is not None:
             alerts_found = False
             
             for col in numeric_cols:
-                zero_count = (df[col] == 0).sum()
+                zero_count = int((df[col] == 0).sum())
                 if zero_count > 0:
                     alerts_found = True
                     if zero_count > len(df) * 0.3:
@@ -783,20 +775,20 @@ if st.session_state.data is not None:
                 
                 with chart_col1:
                     fig1 = create_chart_safely("Bar Chart", df, text_cols[0], numeric_cols[0], 
-                                              None, numeric_cols, text_cols, 10)
+                                               None, numeric_cols, text_cols, 10)
                     if fig1:
                         st.plotly_chart(fig1, use_container_width=True, height=300)
                 
                 with chart_col2:
                     fig2 = create_chart_safely("Pie Chart", df, text_cols[0], numeric_cols[0], 
-                                              None, numeric_cols, text_cols, 10)
+                                               None, numeric_cols, text_cols, 10)
                     if fig2:
                         st.plotly_chart(fig2, use_container_width=True, height=300)
                 
                 with chart_col3:
                     if len(numeric_cols) > 1:
                         fig3 = create_chart_safely("Scatter Plot", df, numeric_cols[0], numeric_cols[1], 
-                                                  None, numeric_cols, text_cols)
+                                                   None, numeric_cols, text_cols)
                         if fig3:
                             st.plotly_chart(fig3, use_container_width=True, height=300)
                 
@@ -806,7 +798,7 @@ if st.session_state.data is not None:
                     
                     with chart_col1:
                         fig4 = create_chart_safely("Histogram", df, numeric_cols[0], numeric_cols[0], 
-                                                  None, numeric_cols, text_cols)
+                                                   None, numeric_cols, text_cols)
                         if fig4:
                             st.plotly_chart(fig4, use_container_width=True, height=300)
                     
@@ -818,7 +810,7 @@ if st.session_state.data is not None:
                     if len(numeric_cols) > 2:
                         corr = df[numeric_cols].corr()
                         fig6 = px.imshow(corr, text_auto=True, aspect='auto',
-                                       color_continuous_scale='RdBu_r', title="Correlation Heatmap")
+                                         color_continuous_scale='RdBu_r', title="Correlation Heatmap")
                         st.plotly_chart(fig6, use_container_width=True)
         else:
             st.info("Charts display is disabled. Enable in sidebar settings.")
@@ -832,20 +824,20 @@ if st.session_state.data is not None:
             
             with col1:
                 pivot_rows = st.multiselect("📊 Rows", text_cols, 
-                                           default=text_cols[:1] if text_cols else [],
-                                           key="pivot_rows")
+                                            default=text_cols[:1] if text_cols else [],
+                                            key="pivot_rows")
             
             with col2:
                 pivot_cols = st.multiselect("📋 Columns", text_cols, key="pivot_cols")
             
             with col3:
                 pivot_values = st.multiselect("🔢 Values", numeric_cols, 
-                                            default=numeric_cols[:1] if numeric_cols else [],
-                                            key="pivot_values")
+                                              default=numeric_cols[:1] if numeric_cols else [],
+                                              key="pivot_values")
             
             with col4:
                 pivot_agg = st.selectbox("⚡ Aggregation", 
-                                        ["sum", "mean", "count", "max", "min", "median", "std"])
+                                         ["sum", "mean", "count", "max", "min", "median", "std"])
             
             if pivot_rows and pivot_values:
                 try:
@@ -892,8 +884,8 @@ if st.session_state.data is not None:
             with col2:
                 st.markdown("### 📈 Data Type Summary")
                 dtype_summary = pd.DataFrame({
-                    'Data Type': df.dtypes.value_counts().index.astype(str),
-                    'Count': df.dtypes.value_counts().values
+                    'Data Type': df.dtypes.astype(str).value_counts().index,
+                    'Count': df.dtypes.astype(str).value_counts().values
                 })
                 st.dataframe(dtype_summary, use_container_width=True, hide_index=True)
             
@@ -940,7 +932,7 @@ if st.session_state.data is not None:
                 st.markdown("### 📈 Distribution")
                 if numeric_cols:
                     fig = px.histogram(df, x=selected_col, nbins=30, marginal="box", 
-                                     title=f"Distribution of {selected_col}")
+                                       title=f"Distribution of {selected_col}")
                     st.plotly_chart(fig, use_container_width=True)
             
             st.markdown("---")
@@ -948,7 +940,7 @@ if st.session_state.data is not None:
             if len(numeric_cols) > 1:
                 corr = df[numeric_cols].corr()
                 fig = px.imshow(corr, text_auto=True, aspect="auto", color_continuous_scale='RdBu_r',
-                              title="Correlation Matrix", labels=dict(color="Correlation"))
+                                title="Correlation Matrix", labels=dict(color="Correlation"))
                 st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("Statistics display is disabled. Enable in sidebar settings.")
@@ -974,6 +966,9 @@ if st.session_state.data is not None:
                 if filter_col in numeric_cols:
                     min_v = float(df[filter_col].min())
                     max_v = float(df[filter_col].max())
+                    # Ensure min != max to avoid slider errors
+                    if min_v == max_v:
+                        max_v += 0.1
                     filters[filter_col] = st.slider(f"Range for {filter_col}", 
                                                     min_v, max_v, (min_v, max_v), key=f"filter_range_{i}")
                 else:
@@ -1018,7 +1013,7 @@ if st.session_state.data is not None:
             excel_filtered = create_excel_with_formatting(filtered_df, "filtered")
             if excel_filtered:
                 st.download_button("📊 Excel", excel_filtered, 
-                                 f"filtered_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
+                                   f"filtered_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
     
     # ========== TAB 7: RAW DATA ==========
     with tabs[6]:
@@ -1031,9 +1026,9 @@ if st.session_state.data is not None:
             with col2:
                 st.metric("Columns", len(df.columns))
             with col3:
-                st.metric("Missing Values", df.isnull().sum().sum())
+                st.metric("Missing Values", int(df.isnull().sum().sum()))
             with col4:
-                st.metric("Duplicate Rows", df.duplicated().sum())
+                st.metric("Duplicate Rows", int(df.duplicated().sum()))
             
             # Search within data
             st.markdown("---")
@@ -1051,7 +1046,6 @@ if st.session_state.data is not None:
             st.markdown("---")
             st.markdown("### 📊 Column Information")
             
-            # FIXED: Build DataFrame safely with correct array lengths
             try:
                 info_data = {
                     'Column': df.columns.tolist(),
@@ -1133,7 +1127,7 @@ if st.session_state.data is not None:
         
         with col2:
             st.markdown("**Column Types**")
-            type_counts = df.dtypes.value_counts()
+            type_counts = df.dtypes.astype(str).value_counts()
             for dtype, count in type_counts.items():
                 st.markdown(f"- **{dtype}:** {count} columns")
     
@@ -1150,8 +1144,8 @@ else:
     # Landing page
     st.markdown("""
     <div class="main-header" style="text-align: center;">
-        <h2>👋 Welcome to Ultimate Professional Dashboard</h2>
-        <p>Start by uploading a file, providing a URL, or using sample data</p>
+        <h2>👋 Welcome to Enterprise Inventory Dashboard</h2>
+        <p>Start by uploading your inventory file, providing a URL, or using sample data.</p>
     </div>
     """, unsafe_allow_html=True)
     
@@ -1207,4 +1201,4 @@ else:
     with col2:
         st.info("ℹ️ Auto-cleans data on upload")
     with col3:
-        st.warning("⚠️ No data sent to external servers")
+        st.warning("⚠️ Local processing only.")
