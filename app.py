@@ -388,81 +388,65 @@ def load_csv(file_content, filename):
 
 
 def load_excel(file_content, filename):
-    """Load Excel with sheet selection"""
+    """Load Excel with automatic header detection"""
 
     try:
         excel_file = io.BytesIO(file_content)
         xl = pd.ExcelFile(excel_file)
 
-        # Get all sheet names
+        # Get sheet names
         sheet_names = xl.sheet_names
 
-        # Show sheet selector
+        # Select sheet
         chosen_sheet = st.selectbox(
             "📑 Select Sheet",
             sheet_names,
             key="sheet_selector"
         )
 
-# Read sheet first without header
-temp_df = pd.read_excel(
-    io.BytesIO(file_content),
-    sheet_name=chosen_sheet,
-    header=None,
-    engine="openpyxl"
-)
+        # Read sheet without header
+        temp_df = pd.read_excel(
+            io.BytesIO(file_content),
+            sheet_name=chosen_sheet,
+            header=None,
+            engine="openpyxl"
+        )
 
-# Find the first row that looks like a real header
-header_row = 0
+        # Detect header row
+        header_row = 0
+        for i in range(min(15, len(temp_df))):
+            row = temp_df.iloc[i]
 
-for i in range(min(15, len(temp_df))):
-    values = temp_df.iloc[i].astype(str)
+            if row.notna().sum() >= 3:
+                header_row = i
+                break
 
-    non_empty = values[values.str.strip() != ""]
+        # Read again with detected header
+        df = pd.read_excel(
+            io.BytesIO(file_content),
+            sheet_name=chosen_sheet,
+            header=header_row,
+            engine="openpyxl"
+        )
 
-    if len(non_empty) >= 3:
-        header_row = i
-        break
+        # Remove empty rows/columns
+        df = df.dropna(how="all")
+        df = df.dropna(axis=1, how="all")
 
-# Read again using detected header
-df = pd.read_excel(
-    io.BytesIO(file_content),
-    sheet_name=chosen_sheet,
-    header=header_row,
-    engine="openpyxl"
-)
-
-# Remove completely empty rows
-df = df.dropna(how="all")
-
-# Remove completely empty columns
-df = df.dropna(axis=1, how="all")
+        # Make column names unique
+        df = make_columns_unique(df)
 
         if df.empty:
             st.warning(f"⚠️ '{chosen_sheet}' sheet is empty.")
             return None
 
         st.success(f"✅ Loaded Sheet: {chosen_sheet}")
+
         return df
 
     except Exception as e:
         st.error(f"❌ Error loading Excel file: {e}")
         return None
-
-
-
-def load_url_data(url):
-    """Load CSV or Google Sheets URL"""
-    try:
-        if 'docs.google.com/spreadsheets' in url:
-            url = re.sub(r'/edit.*', '/export?format=csv', url)
-            url = re.sub(r'/pub.*', '/export?format=csv', url)
-        df = pd.read_csv(url)
-        return df if not df.empty else None
-    except Exception as e:
-        st.error(f"❌ URL Error: {e}")
-        return None
-
 
 def generate_sample_data():
     """Generate realistic sample inventory data"""
