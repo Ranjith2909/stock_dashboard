@@ -388,13 +388,13 @@ def load_csv(file_content, filename):
 
 
 def load_excel(file_content, filename):
-    """Load Excel with automatic header detection"""
+    """Load Excel file with sheet selection"""
 
     try:
         excel_file = io.BytesIO(file_content)
         xl = pd.ExcelFile(excel_file)
 
-        # Get sheet names
+        # Sheet names
         sheet_names = xl.sheet_names
 
         # Select sheet
@@ -404,52 +404,18 @@ def load_excel(file_content, filename):
             key="sheet_selector"
         )
 
-        # Read sheet without header
-        temp_df = pd.read_excel(
+        # Read selected sheet
+        df = pd.read_excel(
             io.BytesIO(file_content),
             sheet_name=chosen_sheet,
-            header=None,
             engine="openpyxl"
         )
 
-        # Detect header row
-        header_row = 0
-        for i in range(min(15, len(temp_df))):
-            row = temp_df.iloc[i]
-
-            if row.notna().sum() >= 3:
-                header_row = i
-                break
-# Read sheet using first two rows
-df = pd.read_excel(
-    io.BytesIO(file_content),
-    sheet_name=chosen_sheet,
-    header=[header_row, header_row + 1],
-    engine="openpyxl"
-)
-
-# Merge two header rows into one
-new_columns = []
-
-for col1, col2 in df.columns:
-    col1 = "" if pd.isna(col1) else str(col1).strip()
-    col2 = "" if pd.isna(col2) else str(col2).strip()
-
-    if col2 and col2 != "nan":
-        if col1.upper() in ["IN", "OUT", "CL STK"]:
-            new_columns.append(f"DAY_{col2}_{col1}")
-        else:
-            new_columns.append(col1)
-    else:
-        new_columns.append(col1)
-
-df.columns = new_columns
-
-        # Remove empty rows/columns
+        # Remove empty rows and columns
         df = df.dropna(how="all")
         df = df.dropna(axis=1, how="all")
 
-        # Make column names unique
+        # Make duplicate column names unique
         df = make_columns_unique(df)
 
         if df.empty:
@@ -463,7 +429,6 @@ df.columns = new_columns
     except Exception as e:
         st.error(f"❌ Error loading Excel file: {e}")
         return None
-
 def generate_sample_data():
     """Generate realistic sample inventory data"""
     np.random.seed(42)
